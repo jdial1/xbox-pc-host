@@ -1,0 +1,9 @@
+.vs/
+packages/
+x64/
+XboxPcHost/x64/
+XboxPcHost/Generated Files/
+AppPackages/
+BundleArtifacts/
+*.user
+*.pfx
