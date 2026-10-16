@@ -97,6 +97,7 @@
     <ClInclude Include="src\Input.h" />
     <ClInclude Include="src\Log.h" />
     <ClInclude Include="src\loader\PeImage.h" />
+    <ClInclude Include="src\loader\Win32Layer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\pch.cpp">
@@ -110,6 +111,7 @@
     <ClCompile Include="src\Input.cpp" />
     <ClCompile Include="src\Log.cpp" />
     <ClCompile Include="src\loader\PeImage.cpp" />
+    <ClCompile Include="src\loader\Win32Layer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">
