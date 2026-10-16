@@ -111,11 +111,10 @@ private:
         m_input.Update();
 
         if (m_runtime && m_runtime->IsRunning())
-        {
             m_runtime->Tick();
-            return;
-        }
-        UpdateShell();
+        else
+            UpdateShell();
+        // Until the game presents its own frames, the shell stays up to show its status.
         DrawShell();
     }
 
@@ -142,8 +141,8 @@ private:
         if (pad.Pressed(GamepadButtons::A) && m_selected < games.size())
         {
             HostServices services{ m_graphics, m_input, m_audio, m_library };
-            if (!m_runtime->Start(games[m_selected], services))
-                m_message = games[m_selected].name + L": " + m_runtime->LastMessage();
+            m_runtime->Start(games[m_selected], services);
+            m_launched = true;
         }
 
         // Left stick tints the background so input is visible at a glance.
@@ -183,7 +182,8 @@ private:
 
         lines.push_back(L"");
         lines.push_back(L"D-pad: select   A: launch   Y: rescan   X: test tone");
-        if (!m_message.empty()) lines.push_back(m_message);
+        if (m_launched) lines.push_back(m_runtime->LastMessage());
+        else if (!m_message.empty()) lines.push_back(m_message);
 
         m_graphics.BeginFrame(m_tintR, m_tintG, m_tintB);
         m_graphics.DrawTextLines(lines, games.empty() ? SIZE_MAX : firstGameLine + m_selected);
@@ -195,6 +195,7 @@ private:
     Audio m_audio;
     GameLibrary m_library;
     std::unique_ptr<IGameRuntime> m_runtime;
+    bool m_launched = false; // a game was started; the shell shows the runtime's status line
 
     bool m_visible = true;
     bool m_closed = false;
