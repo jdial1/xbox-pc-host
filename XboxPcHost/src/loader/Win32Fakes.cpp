@@ -60,6 +60,9 @@ namespace
         return nullptr;
     }
 
+    // Never a debugger: the host may be under one, and games change behavior when they see it.
+    BOOL WINAPI Shim_IsDebuggerPresent() { return FALSE; }
+
     BOOL Denied()
     {
         SetLastError(ERROR_ACCESS_DENIED);
@@ -85,6 +88,7 @@ namespace
 void RegisterFakes(Win32Layer& layer)
 {
 #define FAKE(dll, fn, shim) layer.Register(dll "!" #fn, reinterpret_cast<void*>(&shim))
+    FAKE("kernel32", IsDebuggerPresent, Shim_IsDebuggerPresent);
     FAKE("kernel32", GetVersionExA, Shim_GetVersionExA);
     FAKE("kernel32", GetSystemDirectoryA, Shim_GetSystemDirectoryA);
     FAKE("kernel32", GetWindowsDirectoryW, Shim_GetWindowsDirectoryW);

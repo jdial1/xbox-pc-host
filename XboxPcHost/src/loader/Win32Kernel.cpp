@@ -164,6 +164,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", GetProcessHeap);
     PASS("kernel32", GetStdHandle);
     PASS("kernel32", GetSystemTime);
+    PASS("kernel32", GetSystemTimeAsFileTime);
     PASS("kernel32", GlobalAlloc);
     PASS("kernel32", GlobalLock);
     PASS("kernel32", GlobalSize);

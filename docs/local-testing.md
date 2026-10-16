@@ -86,7 +86,10 @@ Delete (or rename) `XboxPcHost/Games/classicube/host-args.txt` to start the laun
 singleplayer. It draws a 1920x1080 software bitmap through gdi32; the log shows
 `CreateDIBSection 1920x1080 top-down` and `first GDI frame 1920x1080`. On the console each
 `BitBlt` sends that bitmap to the screen; the harness has no screen, so it only logs the first frame.
-Its web requests (`ws2_32`) are not implemented, so the server list stays empty.
+Its network calls go to the real Winsock, and the certificate checks for TLS to the real crypt32, so
+the launcher's update check works: the log shows `HTTP: result 0 (http 200)` for
+`cdn.classicube.net/client/builds.json`. That means running it on a test machine makes real
+requests to ClassiCube's servers.
 
 A game's worker threads can outlive its main thread, and the app partition has no `TerminateThread`.
 When that happens the log says `N game thread(s) still running; keeping the image mapped` and the

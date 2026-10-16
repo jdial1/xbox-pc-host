@@ -25,6 +25,7 @@ Win32Layer::Win32Layer()
     RegisterInput(*this);
     RegisterAudio(*this);
     RegisterGdi(*this);
+    RegisterNet(*this);
 }
 
 void Win32Layer::Register(const char* key, void* fn)

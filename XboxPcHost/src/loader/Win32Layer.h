@@ -36,6 +36,7 @@ void RegisterD3D(Win32Layer& layer);
 void RegisterInput(Win32Layer& layer);
 void RegisterAudio(Win32Layer& layer);
 void RegisterGdi(Win32Layer& layer);
+void RegisterNet(Win32Layer& layer);
 class GameDisplay;
 void SetGameDisplayForD3D(GameDisplay* display);
 void SetGameDisplayForGdi(GameDisplay* display);
