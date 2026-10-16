@@ -68,6 +68,8 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
+      <!-- No IDL types, so there is no .winmd to package. -->
+      <GenerateWindowsMetadata>false</GenerateWindowsMetadata>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;d2d1.lib;dwrite.lib;xaudio2.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>

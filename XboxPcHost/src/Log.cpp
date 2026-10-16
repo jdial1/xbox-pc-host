@@ -11,7 +11,8 @@ void host::log::Init(std::filesystem::path const& file)
 {
     std::lock_guard guard(g_lock);
     if (g_file) fclose(g_file);
-    if (_wfopen_s(&g_file, file.c_str(), L"w, ccs=UTF-8") != 0) g_file = nullptr;
+    // Shared for reading so the log can be tailed while the app runs.
+    g_file = _wfsopen(file.c_str(), L"w, ccs=UTF-8", _SH_DENYWR);
 }
 
 void host::log::Write(const wchar_t* fmt, ...)

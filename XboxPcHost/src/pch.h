@@ -32,6 +32,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <share.h>
 #include <cwctype>
 #include <deque>
 #include <filesystem>
