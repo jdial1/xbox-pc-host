@@ -112,6 +112,7 @@
     <ClCompile Include="src\Log.cpp" />
     <ClCompile Include="src\loader\PeImage.cpp" />
     <ClCompile Include="src\loader\Win32Layer.cpp" />
+    <ClCompile Include="src\loader\Win32Kernel.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

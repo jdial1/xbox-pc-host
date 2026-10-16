@@ -17,7 +17,10 @@ namespace
     }
 }
 
-Win32Layer::Win32Layer() = default;
+Win32Layer::Win32Layer()
+{
+    RegisterKernel32(*this);
+}
 
 void Win32Layer::Register(const char* key, void* fn)
 {

@@ -24,3 +24,6 @@ private:
     std::unordered_map<std::string, void*> m_fallbacks;
     std::vector<std::string> m_unresolved;
 };
+
+// One per area of the Win32 surface (Win32Kernel.cpp, ...).
+void RegisterKernel32(Win32Layer& layer);
