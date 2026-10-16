@@ -128,12 +128,20 @@ namespace
         void Run()
         {
             uint8_t* base = m_image->Base();
+            SetGameProcess(base, m_image->Path());
             HOST_LOG(L"game thread started at entry +0x%llx",
                 static_cast<unsigned long long>(static_cast<uint8_t*>(m_image->EntryPoint()) - base));
 
             DWORD exitCode = 0;
             EXCEPTION_RECORD crash{};
             bool returned = CallEntry(m_image->EntryPoint(), exitCode, crash);
+
+            // ExitProcess unwinds here with its code, which is a clean exit.
+            if (!returned && crash.ExceptionCode == kGameExitException)
+            {
+                returned = true;
+                exitCode = GameExitCode();
+            }
 
             std::lock_guard lock(m_lock);
             if (returned)
