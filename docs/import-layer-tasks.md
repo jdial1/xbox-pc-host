@@ -47,6 +47,41 @@ Rules:
 8. Test exe: add a tiny console exe under `XboxPcHost/Games/loader-test/` (source in `tools/loader-test/`)
    that prints a line and exits with 42. Expected shell line: "loader-test exited with code 42".
 
+Notes on tasks 1-8:
+- Task 3: one shared stub can't tell which import was called. Simple version first: log every
+  unresolved name at bind time and point them all at one generic "unimplemented call" stub.
+- Task 4: `table["kernel32!Sleep"] = &Sleep;` compiling proves the function is in the app partition.
+  msvcrt's memcpy/memmove/memset/strlen can point at the host CRT; _setjmp/longjmp too, because
+  the mapper registers .pdata.
+- Task 5: the bundled folder is read-only on the console, and ClassiCube writes next to its exe.
+  On first launch, copy the game into LocalState\Games and run it from there.
+
+## Later tasks (one sitting each)
+
+9. Files A: CreateFileA/W via CreateFile2FromApp; ReadFile, WriteFile, SetFilePointer, GetFileSize,
+   Get/SetFileTime, CloseHandle pass through. One helper maps the game's paths into its LocalState
+   folder; A versions convert to W. Done when ClassiCube opens its texture pack zip.
+10. Files B: FindFirst/NextFile via FindFirstFileExFromApp; CreateDirectory, DeleteFile, MoveFileEx,
+    GetFileAttributes via their FromApp versions; a virtual current directory starting at the game folder.
+11. Small fakes: GetVersionExA reports Windows 10; system/windows directory return "C:\Windows";
+    SetUnhandledExceptionFilter stores and returns null; CreateProcess, ShellExecute and
+    ReadProcessMemory fail with ERROR_ACCESS_DENIED; comdlg32 dialogs return FALSE;
+    Global* memory functions go to the heap.
+12. Dynamic loading: LoadLibraryA/W return a fake handle per DLL name; GetProcAddress on it goes
+    through the resolver and logs every name. Done when the log shows the d3d11 names ClassiCube asks for.
+13. Window A: RegisterClass* store the WndProc; CreateWindowEx returns one fake HWND; rect and
+    metrics queries report the swapchain size; other window calls return plausible values.
+14. Window B: PeekMessage hands out WM_SIZE/WM_ACTIVATE/WM_CLOSE from CoreWindow events;
+    DispatchMessage calls the stored WndProc; DefWindowProc returns 0.
+15. Graphics: replace D3D11CreateDeviceAndSwapChain to create the swapchain with
+    CreateSwapChainForCoreWindow, after the shell releases its own. Done when ClassiCube's first
+    frame appears on the TV.
+16. Keyboard and mouse messages from Input; GetKeyState; cursor functions.
+17. Controller to keyboard/mouse: one mapping table (left stick WASD, right stick mouse,
+    A Space, triggers mouse buttons, Menu Esc), per-game later.
+18. Audio: the 8 winmm waveOut* functions onto one XAudio2 voice; set WHDR_DONE when a buffer finishes.
+19. Leftovers (gdi32, clipboard, shell32) stay stubbed unless the log shows they're needed.
+
 ## Report back in this format
 
 After each task, paste this block into the project thread:
