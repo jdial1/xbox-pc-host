@@ -20,6 +20,7 @@ namespace
 Win32Layer::Win32Layer()
 {
     RegisterKernel32(*this);
+    RegisterFiles(*this);
 }
 
 void Win32Layer::Register(const char* key, void* fn)

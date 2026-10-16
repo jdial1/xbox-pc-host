@@ -27,6 +27,7 @@ private:
 
 // One per area of the Win32 surface (Win32Kernel.cpp, ...).
 void RegisterKernel32(Win32Layer& layer);
+void RegisterFiles(Win32Layer& layer);
 
 // The game "process": what GetModuleHandle, GetModuleFileName, GetCommandLine
 // and ExitProcess report. One game runs at a time. Call from the game thread.
@@ -36,3 +37,7 @@ void SetGameProcess(void* imageBase, std::filesystem::path const& exe);
 // handler; the exit code comes from GameExitCode().
 constexpr unsigned long kGameExitException = 0xE0584954;
 unsigned long GameExitCode();
+
+// File paths: the game only sees its own folder (see Win32Files.cpp).
+std::filesystem::path MapGamePath(const wchar_t* name);
+void SetGameRoot(std::filesystem::path const& root);

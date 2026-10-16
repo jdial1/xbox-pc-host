@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "loader/Win32Layer.h"
+#include "loader/Win32Text.h"
 #include "Log.h"
 
 namespace
@@ -14,14 +15,6 @@ namespace
         DWORD mainThread = 0;
         std::atomic<DWORD> exitCode{ 0 };
     } g_process;
-
-    std::string ToAnsi(std::wstring const& w)
-    {
-        int n = WideCharToMultiByte(CP_ACP, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        std::string a(n > 0 ? n - 1 : 0, '\0');
-        if (n > 1) WideCharToMultiByte(CP_ACP, 0, w.c_str(), -1, a.data(), n, nullptr, nullptr);
-        return a;
-    }
 
     bool IsGameModule(HMODULE module) { return !module || module == g_process.base; }
 
@@ -81,10 +74,11 @@ void SetGameProcess(void* imageBase, std::filesystem::path const& exe)
 {
     g_process.base = static_cast<HMODULE>(imageBase);
     g_process.exeW = exe.wstring();
-    g_process.exeA = ToAnsi(g_process.exeW);
+    g_process.exeA = Narrow(g_process.exeW);
     g_process.commandLineW = L"\"" + g_process.exeW + L"\"";
     g_process.commandLineA = "\"" + g_process.exeA + "\"";
     g_process.mainThread = GetCurrentThreadId();
+    SetGameRoot(exe.parent_path());
     g_process.exitCode = 0;
 }
 
