@@ -37,12 +37,12 @@ namespace
 
     HMODULE WINAPI Shim_GetModuleHandleW(LPCWSTR name)
     {
-        return name ? GetModuleHandleW(name) : g_process.base;
+        return name ? FakeModule(Narrow(name).c_str()) : g_process.base;
     }
 
     HMODULE WINAPI Shim_GetModuleHandleA(LPCSTR name)
     {
-        return name ? GetModuleHandleA(name) : g_process.base;
+        return name ? FakeModule(name) : g_process.base;
     }
 
     DWORD WINAPI Shim_GetModuleFileNameW(HMODULE module, LPWSTR buffer, DWORD size)

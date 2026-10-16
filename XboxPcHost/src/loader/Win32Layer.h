@@ -20,6 +20,7 @@ public:
 private:
     static void* MakeFallback(std::string const& key);
 
+    mutable std::mutex m_lock;
     std::unordered_map<std::string, void*> m_table;
     std::unordered_map<std::string, void*> m_fallbacks;
     std::vector<std::string> m_unresolved;
@@ -29,6 +30,7 @@ private:
 void RegisterKernel32(Win32Layer& layer);
 void RegisterFiles(Win32Layer& layer);
 void RegisterFakes(Win32Layer& layer);
+void RegisterLoader(Win32Layer& layer);
 
 // The game "process": what GetModuleHandle, GetModuleFileName, GetCommandLine
 // and ExitProcess report. One game runs at a time. Call from the game thread.
@@ -42,3 +44,10 @@ unsigned long GameExitCode();
 // File paths: the game only sees its own folder (see Win32Files.cpp).
 std::filesystem::path MapGamePath(const wchar_t* name);
 void SetGameRoot(std::filesystem::path const& root);
+
+// "KERNEL32.DLL" -> "kernel32": the form the "dll!Name" table keys use.
+std::string NormalizeDllName(const char* dll);
+
+// A stand-in HMODULE for a DLL name (one per normalized name). LoadLibrary and
+// GetModuleHandle hand these out; GetProcAddress on one goes through the resolver.
+HMODULE FakeModule(const char* dll);

@@ -2,19 +2,16 @@
 #include "loader/Win32Layer.h"
 #include "Log.h"
 
-namespace
+std::string NormalizeDllName(const char* dll)
 {
-    std::string NormalizeDll(const char* dll)
-    {
-        std::string s = dll;
-        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (s.size() > 4 && s.compare(s.size() - 4, 4, ".dll") == 0)
-            s.resize(s.size() - 4);
-        // These are forwarders into kernel32's functionality.
-        if (s == "kernelbase" || s.rfind("api-ms-win-core-", 0) == 0)
-            return "kernel32";
-        return s;
-    }
+    std::string s = dll;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (s.size() > 4 && s.compare(s.size() - 4, 4, ".dll") == 0)
+        s.resize(s.size() - 4);
+    // These are forwarders into kernel32's functionality.
+    if (s == "kernelbase" || s.rfind("api-ms-win-core-", 0) == 0)
+        return "kernel32";
+    return s;
 }
 
 Win32Layer::Win32Layer()
@@ -22,6 +19,7 @@ Win32Layer::Win32Layer()
     RegisterKernel32(*this);
     RegisterFiles(*this);
     RegisterFakes(*this);
+    RegisterLoader(*this);
 }
 
 void Win32Layer::Register(const char* key, void* fn)
@@ -31,10 +29,12 @@ void Win32Layer::Register(const char* key, void* fn)
 
 void* Win32Layer::ResolveImport(const char* dll, const char* name, uint16_t ordinal)
 {
-    std::string key = NormalizeDll(dll);
+    std::string key = NormalizeDllName(dll);
     key += '!';
     key += name ? std::string(name) : "#" + std::to_string(ordinal);
 
+    // The game can resolve names at run time from any of its threads.
+    std::lock_guard lock(m_lock);
     auto it = m_table.find(key);
     if (it != m_table.end())
         return it->second;
@@ -50,6 +50,7 @@ void* Win32Layer::ResolveImport(const char* dll, const char* name, uint16_t ordi
 
 void Win32Layer::LogUnresolved() const
 {
+    std::lock_guard lock(m_lock);
     HOST_LOG(L"unresolved: %zu imports", m_unresolved.size());
     for (auto const& key : m_unresolved)
         HOST_LOG(L"  unresolved %S", key.c_str());
