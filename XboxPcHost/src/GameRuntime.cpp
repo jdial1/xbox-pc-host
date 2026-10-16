@@ -1,28 +1,35 @@
 #include "pch.h"
 #include "GameRuntime.h"
 #include "Log.h"
+#include "loader/PeImage.h"
+#include "loader/Win32Layer.h"
+
+namespace fs = std::filesystem;
 
 namespace
 {
-    const wchar_t* MachineName(WORD machine)
-    {
-        switch (machine)
-        {
-        case IMAGE_FILE_MACHINE_AMD64: return L"x64";
-        case IMAGE_FILE_MACHINE_I386: return L"x86";
-        case IMAGE_FILE_MACHINE_ARM64: return L"ARM64";
-        default: return L"unknown";
-        }
-    }
-
-    // Placeholder until the loader exists: it opens the exe, checks the PE
-    // headers, reports what it found, and declines to run it.
-    class StubRuntime final : public IGameRuntime
+    // Maps the game's exe through the Win32 layer. Running it comes next.
+    class LoaderRuntime final : public IGameRuntime
     {
     public:
-        bool Start(GameEntry const& game, HostServices&) override
+        bool Start(GameEntry const& game, HostServices& host) override
         {
-            m_message = Inspect(game.exe);
+            m_message.clear();
+            m_image.reset();
+
+            fs::path exe;
+            if (!PrepareFolder(game, host, exe))
+                return Fail(game, L"can't copy the game to LocalState");
+
+            auto image = std::make_unique<PeImage>();
+            if (!image->Load(exe, m_win32, m_message))
+                return Fail(game, m_message);
+            m_win32.LogUnresolved();
+
+            m_image = std::move(image);
+            wchar_t buf[64];
+            swprintf_s(buf, L"mapped at %p", m_image->Base());
+            m_message = buf;
             HOST_LOG(L"%s: %s", game.name.c_str(), m_message.c_str());
             return false;
         }
@@ -32,36 +39,43 @@ namespace
         std::wstring const& LastMessage() const override { return m_message; }
 
     private:
-        static std::wstring Inspect(std::filesystem::path const& exe)
+        bool Fail(GameEntry const& game, std::wstring message)
         {
-            FILE* f = nullptr;
-            if (_wfopen_s(&f, exe.c_str(), L"rb") != 0 || !f)
-                return L"can't open exe";
-
-            IMAGE_DOS_HEADER dos{};
-            IMAGE_NT_HEADERS64 nt{};
-            bool ok = fread(&dos, sizeof(dos), 1, f) == 1 && dos.e_magic == IMAGE_DOS_SIGNATURE &&
-                fseek(f, dos.e_lfanew, SEEK_SET) == 0 && fread(&nt, sizeof(nt), 1, f) == 1 &&
-                nt.Signature == IMAGE_NT_SIGNATURE;
-            fclose(f);
-            if (!ok) return L"not a valid PE file";
-
-            wchar_t buf[256];
-            if (nt.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
-            {
-                swprintf_s(buf, L"%s exe; only x64 games can run on the console", MachineName(nt.FileHeader.Machine));
-                return buf;
-            }
-            swprintf_s(buf, L"valid x64 PE, %u sections, image size %u KB. Loader not built yet (stage 2).",
-                nt.FileHeader.NumberOfSections, nt.OptionalHeader.SizeOfImage / 1024);
-            return buf;
+            m_message = std::move(message);
+            HOST_LOG(L"%s: %s", game.name.c_str(), m_message.c_str());
+            return false;
         }
 
+        // The bundled folder is read-only and games write next to their exe,
+        // so bundled games are copied into LocalState\Games once and run there.
+        static bool PrepareFolder(GameEntry const& game, HostServices& host, fs::path& exe)
+        {
+            if (game.writable)
+            {
+                exe = game.exe;
+                return true;
+            }
+
+            fs::path dest = host.library.UserGamesRoot() / game.name;
+            exe = dest / fs::relative(game.exe, game.folder);
+
+            std::error_code ec;
+            if (fs::exists(exe, ec))
+                return true;
+            fs::create_directories(dest, ec);
+            fs::copy(game.folder, dest, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
+            if (ec)
+                HOST_LOG(L"copy to %s failed: %S", dest.c_str(), ec.message().c_str());
+            return !ec;
+        }
+
+        Win32Layer m_win32;
+        std::unique_ptr<PeImage> m_image;
         std::wstring m_message;
     };
 }
 
 std::unique_ptr<IGameRuntime> CreateGameRuntime()
 {
-    return std::make_unique<StubRuntime>();
+    return std::make_unique<LoaderRuntime>();
 }
