@@ -34,6 +34,7 @@ void RegisterLoader(Win32Layer& layer);
 void RegisterWindow(Win32Layer& layer);
 void RegisterD3D(Win32Layer& layer);
 void RegisterInput(Win32Layer& layer);
+void RegisterAudio(Win32Layer& layer);
 class GameDisplay;
 void SetGameDisplayForD3D(GameDisplay* display);
 
@@ -69,3 +70,6 @@ void DetachGameWindow();
 void PostGameMessage(UINT message, WPARAM wParam, LPARAM lParam);
 UINT GameScreenWidth();
 UINT GameScreenHeight();
+
+// The XAudio2 engine winmm's waveOut plays through; null means no audio device.
+void SetGameAudio(IXAudio2* engine);

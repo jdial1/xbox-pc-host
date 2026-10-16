@@ -66,3 +66,15 @@ no CoreWindow. On the console it should print `game swapchain <w>x<h> created on
 
 After the game takes the CoreWindow the shell can't draw again; restart the app to launch another
 game. The shell's swapchain isn't recreated when the game exits.
+
+## Test programs
+
+Small freestanding exes under `XboxPcHost/Games/` (sources and `build.cmd` in `tools/`), run with `host-test.exe <exe> --expect "exited with code N"`:
+
+| Exe | What it checks | Expected |
+|---|---|---|
+| `loader-test` | mapping, imports, `ExitProcess` | code 42 |
+| `window-test` | window class, `WM_SIZE`/`WM_ACTIVATE`, keyboard, mouse, wheel | code 127 with `--inject keys` or `--inject pad` |
+| `audio-test` | `waveOut` open, play, `WHDR_DONE`, close | code 31 on a machine with an audio device (code 0 when there is none) |
+
+`--inject pad` drives the controller mapping in `src/InputMapping.cpp`; `--inject keys` drives a real keyboard and mouse.

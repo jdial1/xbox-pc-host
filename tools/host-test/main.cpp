@@ -6,6 +6,7 @@
 #include "pch.h"
 #include "GameRuntime.h"
 #include "Graphics.h"
+#include "Audio.h"
 #include "Input.h"
 #include "loader/Win32Layer.h"
 #include "Log.h"
@@ -17,6 +18,7 @@ int wmain(int argc, wchar_t** argv)
         fputws(L"usage: host-test <exe> [--expect text] [--timeout seconds]\n", stderr);
         return 1;
     }
+    winrt::init_apartment(winrt::apartment_type::multi_threaded); // XAudio2 needs COM
     std::filesystem::path exe = std::filesystem::absolute(argv[1]);
     std::wstring expect;
     std::wstring inject;
@@ -35,9 +37,9 @@ int wmain(int argc, wchar_t** argv)
     GameLibrary library;
     Graphics graphics; // never initialized: it reports size 0 and refuses to hand over a window
     Input input; // never initialized: no devices, so the game sees an idle keyboard and mouse
-    alignas(16) static char unused[16]; // services the runtime doesn't use yet
-    HostServices services{ graphics, input,
-        reinterpret_cast<Audio&>(unused), library };
+    Audio audio;
+    audio.Initialize(); // real XAudio2 where the machine has an audio device, otherwise no audio
+    HostServices services{ graphics, input, audio, library };
 
     auto runtime = CreateGameRuntime();
     runtime->Start(game, services);

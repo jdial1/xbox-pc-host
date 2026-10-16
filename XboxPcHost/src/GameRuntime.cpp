@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "GameRuntime.h"
 #include "Log.h"
+#include "Audio.h"
 #include "Graphics.h"
 #include "InputMapping.h"
 #include "loader/GameDisplay.h"
@@ -138,6 +139,7 @@ namespace
             }
             m_name = game.name;
             m_input = &host.input;
+            SetGameAudio(host.audio.Engine()); // null when the console has no audio, which waveOut reports as no driver
             m_lastTick = std::chrono::steady_clock::now();
             m_screen = std::make_unique<GraphicsDisplay>(host.graphics);
             SetGameDisplay(m_screen.get());
