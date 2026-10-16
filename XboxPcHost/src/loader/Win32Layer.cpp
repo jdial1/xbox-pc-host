@@ -22,6 +22,7 @@ Win32Layer::Win32Layer()
     RegisterLoader(*this);
     RegisterWindow(*this);
     RegisterD3D(*this);
+    RegisterInput(*this);
 }
 
 void Win32Layer::Register(const char* key, void* fn)

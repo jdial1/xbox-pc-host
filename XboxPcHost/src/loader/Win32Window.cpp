@@ -70,7 +70,7 @@ namespace
     };
     static_assert(sizeof(Msg) == 48);
 
-    constexpr UINT kWmSize = 0x0005, kWmActivate = 0x0006, kWmClose = 0x0010;
+    constexpr UINT kWmSize = 0x0005, kWmActivate = 0x0006, kWmClose = 0x0010, kWmChar = 0x0102;
 
     struct ClassEntry
     {
@@ -88,7 +88,7 @@ namespace
     std::deque<std::array<uintptr_t, 3>> g_queue;
     constexpr size_t kMaxQueued = 256; // a game that never pumps messages mustn't grow this forever
 
-    winrt::event_token g_sizeToken, g_activatedToken, g_closedToken;
+    winrt::event_token g_sizeToken, g_activatedToken, g_closedToken, g_charToken;
     winrt::Windows::UI::Core::CoreWindow g_coreWindow{ nullptr };
 
     UINT Width() { return g_display ? g_display->Width() : 1280; }
@@ -245,12 +245,6 @@ namespace
         return old;
     }
 
-    BOOL WINAPI Shim_GetCursorPos(POINT* p)
-    {
-        *p = { static_cast<LONG>(Width() / 2), static_cast<LONG>(Height() / 2) };
-        return TRUE;
-    }
-
     HWND WINAPI Shim_GetForegroundWindow() { return kHwnd; }
     HDC WINAPI Shim_GetDC(HWND) { return kDc; }
     int WINAPI Shim_ReleaseDC(HWND, HDC) { return 1; }
@@ -284,6 +278,9 @@ void AttachGameWindow(winrt::Windows::UI::Core::CoreWindow const& window)
     g_activatedToken = window.Activated([](CoreWindow const&, WindowActivatedEventArgs const& args) {
         Post(kWmActivate, args.WindowActivationState() == CoreWindowActivationState::Deactivated ? 0 : 1, 0);
     });
+    g_charToken = window.CharacterReceived([](CoreWindow const&, CharacterReceivedEventArgs const& args) {
+        Post(kWmChar, args.KeyCode(), 1);
+    });
     g_closedToken = window.Closed([](CoreWindow const&, CoreWindowEventArgs const&) { Post(kWmClose, 0, 0); });
 }
 
@@ -294,11 +291,16 @@ void DetachGameWindow()
         g_coreWindow.SizeChanged(g_sizeToken);
         g_coreWindow.Activated(g_activatedToken);
         g_coreWindow.Closed(g_closedToken);
+        g_coreWindow.CharacterReceived(g_charToken);
         g_coreWindow = nullptr;
     }
     std::lock_guard lock(g_lock);
     g_queue.clear();
 }
+
+void PostGameMessage(UINT message, WPARAM wParam, LPARAM lParam) { Post(message, wParam, lParam); }
+UINT GameScreenWidth() { return Width(); }
+UINT GameScreenHeight() { return Height(); }
 
 void SetGameDisplay(GameDisplay* display)
 {
@@ -330,7 +332,6 @@ void RegisterWindow(Win32Layer& layer)
     SHIM(GetSystemMetrics);
     SHIM(GetWindowLongA);
     SHIM(SetWindowLongA);
-    SHIM(GetCursorPos);
     SHIM(GetForegroundWindow);
     SHIM(GetDC);
     SHIM(ReleaseDC);
@@ -342,7 +343,7 @@ void RegisterWindow(Win32Layer& layer)
 #undef SHIM
     layer.Register("user32!DefWindowProcA", reinterpret_cast<void*>(&Shim_DefWindowProc));
     layer.Register("user32!DefWindowProcW", reinterpret_cast<void*>(&Shim_DefWindowProc));
-    for (const char* name : { "BringWindowToTop", "ClipCursor", "DestroyWindow", "SetCursorPos", "SetForegroundWindow",
+    for (const char* name : { "BringWindowToTop", "ClipCursor", "DestroyWindow", "SetForegroundWindow",
         "SetWindowPos", "SetWindowTextA", "SetWindowTextW", "ValidateRect" })
         layer.Register((std::string("user32!") + name).c_str(), reinterpret_cast<void*>(&Shim_True));
 }

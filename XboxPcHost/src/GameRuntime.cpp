@@ -2,6 +2,7 @@
 #include "GameRuntime.h"
 #include "Log.h"
 #include "Graphics.h"
+#include "InputMapping.h"
 #include "loader/GameDisplay.h"
 #include "loader/PeImage.h"
 #include "loader/Win32Layer.h"
@@ -136,6 +137,8 @@ namespace
                 m_thread = nullptr;
             }
             m_name = game.name;
+            m_input = &host.input;
+            m_lastTick = std::chrono::steady_clock::now();
             m_screen = std::make_unique<GraphicsDisplay>(host.graphics);
             SetGameDisplay(m_screen.get());
             AttachGameWindow(CurrentCoreWindow());
@@ -170,6 +173,11 @@ namespace
         void Tick() override
         {
             if (m_screen) m_screen->Pump();
+            if (!m_input) return;
+            auto now = std::chrono::steady_clock::now();
+            float seconds = std::min(0.1f, std::chrono::duration<float>(now - m_lastTick).count());
+            m_lastTick = now;
+            FeedGameInput(MapInput(m_input->KeyboardMouse(), m_input->Pad(), seconds));
         }
         void Stop() override { DetachGameWindow(); }
         bool IsRunning() const override { return State() == RunState::Running; }
@@ -276,6 +284,8 @@ namespace
         }
 
         std::unique_ptr<GraphicsDisplay> m_screen;
+        Input* m_input = nullptr;
+        std::chrono::steady_clock::time_point m_lastTick;
         Win32Layer m_win32;
         std::unique_ptr<PeImage> m_image;
         HANDLE m_thread = nullptr;

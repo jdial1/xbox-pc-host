@@ -95,11 +95,13 @@
     <ClInclude Include="src\GameRuntime.h" />
     <ClInclude Include="src\Graphics.h" />
     <ClInclude Include="src\Input.h" />
+    <ClInclude Include="src\InputMapping.h" />
     <ClInclude Include="src\Log.h" />
     <ClInclude Include="src\loader\PeImage.h" />
     <ClInclude Include="src\loader\Win32Layer.h" />
     <ClInclude Include="src\loader\Win32Text.h" />
     <ClInclude Include="src\loader\GameDisplay.h" />
+    <ClInclude Include="src\loader\GameInput.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\pch.cpp">
@@ -111,6 +113,7 @@
     <ClCompile Include="src\GameRuntime.cpp" />
     <ClCompile Include="src\Graphics.cpp" />
     <ClCompile Include="src\Input.cpp" />
+    <ClCompile Include="src\InputMapping.cpp" />
     <ClCompile Include="src\Log.cpp" />
     <ClCompile Include="src\loader\PeImage.cpp" />
     <ClCompile Include="src\loader\Win32Layer.cpp" />
@@ -120,6 +123,7 @@
     <ClCompile Include="src\loader\Win32Loader.cpp" />
     <ClCompile Include="src\loader\Win32Window.cpp" />
     <ClCompile Include="src\loader\Win32D3D.cpp" />
+    <ClCompile Include="src\loader\Win32Input.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

@@ -20,6 +20,8 @@ struct KeyboardMouseState
     std::array<bool, 256> keys{}; // indexed by Win32 virtual-key code
     float mouseDeltaX = 0, mouseDeltaY = 0; // accumulated since last Update()
     float pointerX = 0, pointerY = 0;       // view pixels
+    std::array<bool, 3> mouseButtons{};     // left, right, middle
+    float wheel = 0;                        // notches since last Update(), positive away from the user
 };
 
 class Input
@@ -36,5 +38,5 @@ private:
     std::vector<winrt::Windows::Gaming::Input::Gamepad> m_gamepads;
     PadState m_pad;
     KeyboardMouseState m_kbm;
-    float m_pendingDx = 0, m_pendingDy = 0;
+    float m_pendingDx = 0, m_pendingDy = 0, m_pendingWheel = 0;
 };

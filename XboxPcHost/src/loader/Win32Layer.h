@@ -33,6 +33,7 @@ void RegisterFakes(Win32Layer& layer);
 void RegisterLoader(Win32Layer& layer);
 void RegisterWindow(Win32Layer& layer);
 void RegisterD3D(Win32Layer& layer);
+void RegisterInput(Win32Layer& layer);
 class GameDisplay;
 void SetGameDisplayForD3D(GameDisplay* display);
 
@@ -63,3 +64,8 @@ void SetGameDisplay(GameDisplay* display);
 // Feeds the game's message loop WM_SIZE, WM_ACTIVATE and WM_CLOSE from the CoreWindow. UI thread only.
 void AttachGameWindow(winrt::Windows::UI::Core::CoreWindow const& window);
 void DetachGameWindow();
+
+// Window state the input and window shims share.
+void PostGameMessage(UINT message, WPARAM wParam, LPARAM lParam);
+UINT GameScreenWidth();
+UINT GameScreenHeight();

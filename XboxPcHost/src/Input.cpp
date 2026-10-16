@@ -48,11 +48,21 @@ void Input::Initialize(CoreWindow const& window)
         auto vk = static_cast<uint32_t>(args.VirtualKey());
         if (vk < m_kbm.keys.size()) m_kbm.keys[vk] = false;
     });
-    window.PointerMoved([this](auto&&, PointerEventArgs const& args)
+    auto updatePointer = [this](PointerEventArgs const& args)
     {
-        auto p = args.CurrentPoint().Position();
+        auto point = args.CurrentPoint();
+        auto p = point.Position();
         m_kbm.pointerX = p.X;
         m_kbm.pointerY = p.Y;
+        auto props = point.Properties();
+        m_kbm.mouseButtons = { props.IsLeftButtonPressed(), props.IsRightButtonPressed(), props.IsMiddleButtonPressed() };
+    };
+    window.PointerMoved([updatePointer](auto&&, PointerEventArgs const& args) { updatePointer(args); });
+    window.PointerPressed([updatePointer](auto&&, PointerEventArgs const& args) { updatePointer(args); });
+    window.PointerReleased([updatePointer](auto&&, PointerEventArgs const& args) { updatePointer(args); });
+    window.PointerWheelChanged([this](auto&&, PointerEventArgs const& args)
+    {
+        m_pendingWheel += args.CurrentPoint().Properties().MouseWheelDelta() / 120.0f; // 120 units per notch
     });
     // Relative motion for mouse-look games; raised on the UI thread.
     MouseDevice::GetForCurrentView().MouseMoved([this](auto&&, MouseEventArgs const& args)
@@ -92,4 +102,6 @@ void Input::Update()
     m_kbm.mouseDeltaX = m_pendingDx;
     m_kbm.mouseDeltaY = m_pendingDy;
     m_pendingDx = m_pendingDy = 0;
+    m_kbm.wheel = m_pendingWheel;
+    m_pendingWheel = 0;
 }
