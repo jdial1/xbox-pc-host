@@ -96,11 +96,129 @@ namespace
         SetLastError(ERROR_SUCCESS);
         return size.LowPart;
     }
+
+    void ToFindDataA(WIN32_FIND_DATAW const& w, WIN32_FIND_DATAA& a)
+    {
+        a.dwFileAttributes = w.dwFileAttributes;
+        a.ftCreationTime = w.ftCreationTime;
+        a.ftLastAccessTime = w.ftLastAccessTime;
+        a.ftLastWriteTime = w.ftLastWriteTime;
+        a.nFileSizeHigh = w.nFileSizeHigh;
+        a.nFileSizeLow = w.nFileSizeLow;
+        a.dwReserved0 = w.dwReserved0;
+        a.dwReserved1 = w.dwReserved1;
+        strcpy_s(a.cFileName, Narrow(w.cFileName).c_str());
+        strcpy_s(a.cAlternateFileName, Narrow(w.cAlternateFileName).c_str());
+    }
+
+    HANDLE WINAPI Shim_FindFirstFileW(LPCWSTR name, LPWIN32_FIND_DATAW data)
+    {
+        return FindFirstFileExFromAppW(MapGamePath(name).c_str(), FindExInfoStandard, data, FindExSearchNameMatch, nullptr, 0);
+    }
+
+    HANDLE WINAPI Shim_FindFirstFileA(LPCSTR name, LPWIN32_FIND_DATAA data)
+    {
+        WIN32_FIND_DATAW w{};
+        HANDLE h = Shim_FindFirstFileW(Widen(name).c_str(), &w);
+        if (h != INVALID_HANDLE_VALUE)
+            ToFindDataA(w, *data);
+        return h;
+    }
+
+    BOOL WINAPI Shim_FindNextFileA(HANDLE find, LPWIN32_FIND_DATAA data)
+    {
+        WIN32_FIND_DATAW w{};
+        if (!FindNextFileW(find, &w))
+            return FALSE;
+        ToFindDataA(w, *data);
+        return TRUE;
+    }
+
+    BOOL WINAPI Shim_CreateDirectoryW(LPCWSTR name, LPSECURITY_ATTRIBUTES security)
+    {
+        return CreateDirectoryFromAppW(MapGamePath(name).c_str(), security);
+    }
+
+    BOOL WINAPI Shim_CreateDirectoryA(LPCSTR name, LPSECURITY_ATTRIBUTES security)
+    {
+        return Shim_CreateDirectoryW(Widen(name).c_str(), security);
+    }
+
+    BOOL WINAPI Shim_DeleteFileW(LPCWSTR name)
+    {
+        return DeleteFileFromAppW(MapGamePath(name).c_str());
+    }
+
+    BOOL WINAPI Shim_MoveFileExW(LPCWSTR from, LPCWSTR to, DWORD flags)
+    {
+        fs::path target = MapGamePath(to);
+        // MoveFileFromApp has no flags, so replacing means deleting the target first.
+        WIN32_FILE_ATTRIBUTE_DATA existing{};
+        if ((flags & MOVEFILE_REPLACE_EXISTING) && GetFileAttributesExFromAppW(target.c_str(), GetFileExInfoStandard, &existing))
+            DeleteFileFromAppW(target.c_str());
+        return MoveFileFromAppW(MapGamePath(from).c_str(), target.c_str());
+    }
+
+    DWORD WINAPI Shim_GetFileAttributesW(LPCWSTR name)
+    {
+        WIN32_FILE_ATTRIBUTE_DATA data{};
+        if (!GetFileAttributesExFromAppW(MapGamePath(name).c_str(), GetFileExInfoStandard, &data))
+            return INVALID_FILE_ATTRIBUTES;
+        return data.dwFileAttributes;
+    }
+
+    DWORD WINAPI Shim_GetFileAttributesA(LPCSTR name)
+    {
+        return Shim_GetFileAttributesW(Widen(name).c_str());
+    }
+
+    DWORD WINAPI Shim_GetCurrentDirectoryA(DWORD size, LPSTR buffer)
+    {
+        std::string cwd;
+        {
+            std::lock_guard lock(g_lock);
+            cwd = Narrow(g_cwd.wstring());
+        }
+        // Like the real call: when it doesn't fit, return the size needed including the terminator.
+        if (cwd.size() + 1 > size)
+            return static_cast<DWORD>(cwd.size() + 1);
+        memcpy(buffer, cwd.c_str(), cwd.size() + 1);
+        return static_cast<DWORD>(cwd.size());
+    }
+
+    BOOL WINAPI Shim_SetCurrentDirectoryW(LPCWSTR name)
+    {
+        fs::path real = MapGamePath(name);
+        DWORD attributes = Shim_GetFileAttributesW(name);
+        if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY))
+        {
+            SetLastError(ERROR_DIRECTORY);
+            return FALSE;
+        }
+        std::lock_guard lock(g_lock);
+        g_cwd = real;
+        return TRUE;
+    }
 }
 
 void RegisterFiles(Win32Layer& layer)
 {
-    layer.Register("kernel32!CreateFileA", reinterpret_cast<void*>(&Shim_CreateFileA));
-    layer.Register("kernel32!CreateFileW", reinterpret_cast<void*>(&Shim_CreateFileW));
-    layer.Register("kernel32!GetFileSize", reinterpret_cast<void*>(&Shim_GetFileSize));
+#define SHIM(fn) layer.Register("kernel32!" #fn, reinterpret_cast<void*>(&Shim_##fn))
+    SHIM(CreateFileA);
+    SHIM(CreateFileW);
+    SHIM(GetFileSize);
+    SHIM(FindFirstFileA);
+    SHIM(FindFirstFileW);
+    SHIM(FindNextFileA);
+    SHIM(CreateDirectoryA);
+    SHIM(CreateDirectoryW);
+    SHIM(DeleteFileW);
+    SHIM(MoveFileExW);
+    SHIM(GetFileAttributesA);
+    SHIM(GetFileAttributesW);
+    SHIM(GetCurrentDirectoryA);
+    SHIM(SetCurrentDirectoryW);
+#undef SHIM
+    // Handles from FindFirstFileExFromApp work with the real FindNextFileW.
+    layer.Register("kernel32!FindNextFileW", reinterpret_cast<void*>(&FindNextFileW));
 }
