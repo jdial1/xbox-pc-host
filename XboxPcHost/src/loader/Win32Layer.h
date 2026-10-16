@@ -11,6 +11,7 @@ public:
 
     void* ResolveImport(const char* dll, const char* name, uint16_t ordinal) override;
 
+    // key is "dll!Name" with the dll already normalized (lowercase, no .dll).
     void Register(const char* key, void* fn);
 
 private:
