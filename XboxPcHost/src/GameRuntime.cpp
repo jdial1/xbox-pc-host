@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "GameRuntime.h"
 #include "Log.h"
+#include "Graphics.h"
+#include "loader/GameDisplay.h"
 #include "loader/PeImage.h"
 #include "loader/Win32Layer.h"
 
@@ -21,6 +23,18 @@ namespace
             return false;
         }
     }
+
+    // The game's window reports the output size; before the swapchain exists that is 0, so fall back to 1080p.
+    class GraphicsDisplay final : public GameDisplay
+    {
+    public:
+        explicit GraphicsDisplay(Graphics& graphics) : m_graphics(graphics) {}
+        UINT Width() const override { return m_graphics.Width() ? m_graphics.Width() : 1920; }
+        UINT Height() const override { return m_graphics.Height() ? m_graphics.Height() : 1080; }
+
+    private:
+        Graphics& m_graphics;
+    };
 
     // Maps the game's exe through the Win32 layer and runs its entry point on
     // its own thread. Status text is built on demand because the thread
@@ -49,6 +63,8 @@ namespace
                 m_thread = nullptr;
             }
             m_name = game.name;
+            m_screen = std::make_unique<GraphicsDisplay>(host.graphics);
+            SetGameDisplay(m_screen.get());
             m_image.reset();
             SetState(RunState::Idle);
 
@@ -184,6 +200,7 @@ namespace
             return !ec;
         }
 
+        std::unique_ptr<GraphicsDisplay> m_screen;
         Win32Layer m_win32;
         std::unique_ptr<PeImage> m_image;
         HANDLE m_thread = nullptr;

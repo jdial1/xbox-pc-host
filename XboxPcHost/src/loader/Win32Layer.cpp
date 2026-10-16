@@ -20,6 +20,7 @@ Win32Layer::Win32Layer()
     RegisterFiles(*this);
     RegisterFakes(*this);
     RegisterLoader(*this);
+    RegisterWindow(*this);
 }
 
 void Win32Layer::Register(const char* key, void* fn)

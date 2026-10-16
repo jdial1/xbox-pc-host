@@ -4,6 +4,7 @@
 // Exit code: 0 ok, 1 usage or load failure, 2 expectation not met, 3 timeout.
 #include "pch.h"
 #include "GameRuntime.h"
+#include "Graphics.h"
 #include "Log.h"
 
 int wmain(int argc, wchar_t** argv)
@@ -27,8 +28,9 @@ int wmain(int argc, wchar_t** argv)
     // The runtime only touches the library for bundled games; writable entries skip that.
     GameEntry game{ exe.parent_path().filename().wstring(), exe.parent_path(), exe, true };
     GameLibrary library;
+    Graphics graphics; // never initialized: it reports size 0 and refuses to hand over a window
     alignas(16) static char unused[16]; // services the runtime doesn't use yet
-    HostServices services{ reinterpret_cast<Graphics&>(unused), reinterpret_cast<Input&>(unused),
+    HostServices services{ graphics, reinterpret_cast<Input&>(unused),
         reinterpret_cast<Audio&>(unused), library };
 
     auto runtime = CreateGameRuntime();
