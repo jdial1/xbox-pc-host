@@ -5,8 +5,8 @@ it, and pulls LocalState\host.log back. Works on Windows PowerShell 5.1 and 7.
   $env:XBOX_USER = '<device portal user>'; $env:XBOX_PASS = '<password>'
   .\tools\test\run-test.ps1 -XboxIp 192.168.1.50 -Package .\AppPackages\XboxPcHost_0.1.0.0_x64_Debug.msix
 
-Credentials come from the environment and are handed to curl on stdin, so they
-never appear on a command line or in a file. Uses curl.exe (ships with Windows
+Credentials, if Device Portal asks for them, come from the environment and are handed
+to curl on stdin, so they never appear on a command line or in a file. Uses curl.exe (ships with Windows
 10+) because Device Portal's certificate is self-signed.
 
 A game only starts when someone presses A in the shell, and this script can't
@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $env:XBOX_USER -or -not $env:XBOX_PASS) { throw 'Set XBOX_USER and XBOX_PASS first.' }
+$haveLogin = [bool]($env:XBOX_USER -and $env:XBOX_PASS) # not needed when Device Portal has authentication turned off
 if (-not (Test-Path $Package)) { throw "Package not found: $Package" }
 if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) { throw 'curl.exe not found.' }
 
@@ -42,7 +42,8 @@ function Csrf {
 }
 
 function Wdp([string] $Method, [string] $Path, [string[]] $Extra = @(), [string] $Out = $null) {
-    $curlArgs = @('-sS', '-k', '--fail-with-body', '-K', '-', '-b', $jar, '-c', $jar, '-X', $Method)
+    $curlArgs = @('-sS', '-k', '--fail-with-body', '-b', $jar, '-c', $jar, '-X', $Method)
+    if ($haveLogin) { $curlArgs += @('-K', '-') }
     if ($Method -ne 'GET') { $curlArgs += @('-H', "X-CSRF-Token: $(Csrf)") }
     if ($Out) { $curlArgs += @('-o', $Out) }
     $curlArgs += $Extra

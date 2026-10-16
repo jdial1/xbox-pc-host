@@ -29,7 +29,7 @@ Exit code 0 is ok, 2 is `crashed:`, 3 is no loader lines in the log.
   `-WaitSeconds 60` to leave time. Without it the log only shows the startup lines.
 - The Device Portal calls in the script have not been run against a console yet. Treat the first run
   as a check of the script too, and compare against `https://<ip>:11443/` if a call fails.
-- Credentials are read from `XBOX_USER` and `XBOX_PASS` and passed to curl on stdin. Don't commit
+- If Device Portal asks for a login, set `XBOX_USER` and `XBOX_PASS`; they are passed to curl on stdin. With authentication off, leave them unset. Don't commit
   `tools/test/results/`.
 
 ## Without a console
