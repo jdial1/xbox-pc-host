@@ -48,7 +48,7 @@ function Wdp([string] $Method, [string] $Path, [string[]] $Extra = @(), [string]
     if ($Out) { $curlArgs += @('-o', $Out) }
     $curlArgs += $Extra
     $curlArgs += "$base$Path"
-    $result = "user = `"$($env:XBOX_USER):$($env:XBOX_PASS)`"" | & curl.exe @args
+    $result = if ($haveLogin) { "user = `"$($env:XBOX_USER):$($env:XBOX_PASS)`"" | & curl.exe @curlArgs } else { & curl.exe @curlArgs }
     if ($LASTEXITCODE -ne 0) { throw "Device Portal $Method $Path failed (curl $LASTEXITCODE): $result" }
     return $result
 }
