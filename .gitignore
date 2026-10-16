@@ -7,3 +7,4 @@ AppPackages/
 BundleArtifacts/
 *.user
 *.pfx
+deploy/
