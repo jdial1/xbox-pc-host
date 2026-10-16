@@ -35,8 +35,11 @@ int wmain(int argc, wchar_t** argv)
 
     auto runtime = CreateGameRuntime();
     runtime->Start(game, services);
-    for (int ms = 0; runtime->IsRunning() && ms < timeout * 1000; ms += 50)
-        Sleep(50);
+    for (int ms = 0; runtime->IsRunning() && ms < timeout * 1000; ms += 10)
+    {
+        runtime->Tick(); // runs what the game asks of the "UI thread"
+        Sleep(10);
+    }
 
     std::wstring message = runtime->LastMessage();
     wprintf(L"%s\n", message.c_str());

@@ -302,8 +302,11 @@ void DetachGameWindow()
 
 void SetGameDisplay(GameDisplay* display)
 {
-    std::lock_guard lock(g_lock);
-    g_display = display;
+    {
+        std::lock_guard lock(g_lock);
+        g_display = display;
+    }
+    SetGameDisplayForD3D(display);
 }
 
 void RegisterWindow(Win32Layer& layer)

@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <fstream>
 #include "loader/Win32Layer.h"
 #include "loader/Win32Text.h"
 #include "Log.h"
@@ -77,6 +78,17 @@ void SetGameProcess(void* imageBase, std::filesystem::path const& exe)
     g_process.exeA = Narrow(g_process.exeW);
     g_process.commandLineW = L"\"" + g_process.exeW + L"\"";
     g_process.commandLineA = "\"" + g_process.exeA + "\"";
+
+    // A game with no menu of its own can be pointed at what to do with host-args.txt next to its exe.
+    std::ifstream argsFile(exe.parent_path() / L"host-args.txt");
+    std::string args;
+    if (argsFile && std::getline(argsFile, args) && !args.empty())
+    {
+        while (!args.empty() && (args.back() == '\r' || args.back() == ' ')) args.pop_back();
+        g_process.commandLineA += " " + args;
+        g_process.commandLineW += L" " + Widen(args.c_str());
+        HOST_LOG(L"command line: %S", g_process.commandLineA.c_str());
+    }
     g_process.mainThread = GetCurrentThreadId();
     SetGameRoot(exe.parent_path());
     g_process.exitCode = 0;

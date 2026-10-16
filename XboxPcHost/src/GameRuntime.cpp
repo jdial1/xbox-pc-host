@@ -25,6 +25,7 @@ namespace
     }
 
     // The game's window reports the output size; before the swapchain exists that is 0, so fall back to 1080p.
+    // The CoreWindow belongs to the UI thread, so swapchain creation is queued for Pump().
     class GraphicsDisplay final : public GameDisplay
     {
     public:
@@ -32,8 +33,73 @@ namespace
         UINT Width() const override { return m_graphics.Width() ? m_graphics.Width() : 1920; }
         UINT Height() const override { return m_graphics.Height() ? m_graphics.Height() : 1080; }
 
+        HRESULT CreateSwapChain(IUnknown* device, DXGI_SWAP_CHAIN_DESC1 const& desc, IDXGISwapChain1** swapChain) override
+        {
+            auto job = std::make_shared<Job>();
+            job->device.copy_from(device);
+            job->desc = desc;
+            {
+                std::lock_guard lock(m_lock);
+                m_jobs.push_back(job);
+            }
+            std::unique_lock lock(job->lock);
+            if (!job->done.wait_for(lock, std::chrono::seconds(5), [&] { return job->finished; }))
+            {
+                job->abandoned = true; // Pump() skips it
+                return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+            }
+            *swapChain = job->result.detach();
+            return job->hr;
+        }
+
+        // UI thread, once per frame while the game runs.
+        void Pump()
+        {
+            std::deque<std::shared_ptr<Job>> jobs;
+            {
+                std::lock_guard lock(m_lock);
+                jobs.swap(m_jobs);
+            }
+            for (auto const& job : jobs)
+            {
+                std::lock_guard lock(job->lock);
+                if (!job->abandoned)
+                    job->hr = Create(*job);
+                job->finished = true;
+                job->done.notify_all();
+            }
+        }
+
     private:
+        struct Job
+        {
+            winrt::com_ptr<IUnknown> device;
+            DXGI_SWAP_CHAIN_DESC1 desc{};
+            winrt::com_ptr<IDXGISwapChain1> result;
+            HRESULT hr = E_FAIL;
+            std::mutex lock;
+            std::condition_variable done;
+            bool finished = false;
+            bool abandoned = false;
+        };
+
+        HRESULT Create(Job& job)
+        {
+            // Only one swapchain can exist on the CoreWindow, so the shell lets go of its own first.
+            if (!m_graphics.ReleaseForGame() && !m_graphics.HandedOver())
+                return E_FAIL;
+            auto dxgiDevice = job.device.as<IDXGIDevice>();
+            winrt::com_ptr<IDXGIAdapter> adapter;
+            winrt::check_hresult(dxgiDevice->GetAdapter(adapter.put()));
+            winrt::com_ptr<IDXGIFactory2> factory;
+            winrt::check_hresult(adapter->GetParent(__uuidof(IDXGIFactory2), factory.put_void()));
+            return factory->CreateSwapChainForCoreWindow(job.device.get(), winrt::get_unknown(m_graphics.Window()),
+                &job.desc, nullptr, job.result.put());
+        }
+
         Graphics& m_graphics;
+        std::mutex m_lock;
+        std::deque<std::shared_ptr<Job>> m_jobs;
     };
 
     // Null where there is no CoreWindow, like the desktop test harness.
@@ -100,8 +166,11 @@ namespace
             return true;
         }
 
-        // Nothing to draw until the game owns the swapchain.
-        void Tick() override {}
+        // The game draws on its own thread; this only runs what it needs from the UI thread.
+        void Tick() override
+        {
+            if (m_screen) m_screen->Pump();
+        }
         void Stop() override { DetachGameWindow(); }
         bool IsRunning() const override { return State() == RunState::Running; }
 
@@ -199,10 +268,8 @@ namespace
             exe = dest / fs::relative(game.exe, game.folder);
 
             std::error_code ec;
-            if (fs::exists(exe, ec))
-                return true;
             fs::create_directories(dest, ec);
-            fs::copy(game.folder, dest, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
+            fs::copy(game.folder, dest, fs::copy_options::recursive | fs::copy_options::update_existing, ec);
             if (ec)
                 HOST_LOG(L"copy to %s failed: %S", dest.c_str(), ec.message().c_str());
             return !ec;

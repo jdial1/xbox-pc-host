@@ -55,3 +55,14 @@ What it proves: mapping, relocations, import binding, the unresolved list, the g
 reporting, and the process shims. What it can't: app container rules (VirtualProtectFromApp limits,
 the `codeGeneration` capability, blocked APIs) and anything graphical. Those need the console, or
 the MSIX installed on a Windows 10/11 client PC.
+
+## What the harness shows for ClassiCube
+
+`XboxPcHost/Games/classicube/host-args.txt` holds `--singleplayer`, which the loader appends to the
+command line so the game skips its GDI launcher and goes straight to Direct3D. On the desktop the
+log should reach `D3D11CreateDevice -> 0x00000000`, then `game swapchain failed` because there is
+no CoreWindow. On the console it should print `game swapchain <w>x<h> created on CoreWindow` and
+`first game frame presented`.
+
+After the game takes the CoreWindow the shell can't draw again; restart the app to launch another
+game. The shell's swapchain isn't recreated when the game exits.

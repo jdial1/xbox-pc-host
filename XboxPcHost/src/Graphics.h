@@ -10,6 +10,13 @@ public:
     void OnWindowSizeChanged();
     void Trim();
 
+    // Gives up the shell's swapchain so a game can create its own on the same
+    // CoreWindow (only one is allowed). Afterwards the shell's drawing calls
+    // do nothing. Returns false if there was no swapchain to give up.
+    bool ReleaseForGame();
+    bool HandedOver() const { return m_handedOver; }
+    winrt::Windows::UI::Core::CoreWindow Window() const { return m_window.get(); }
+
     // Clears the back buffer and binds it as the render target.
     void BeginFrame(float r, float g, float b);
     // Draws lines of text top-left, inside the TV-safe area.
@@ -30,6 +37,10 @@ private:
     void CreateDevice();
     void CreateSizeDependentResources();
     void HandleDeviceLost();
+
+    // The UI thread draws and a game thread can hand the window over, so both take this.
+    std::mutex m_lock;
+    bool m_handedOver = false;
 
     winrt::agile_ref<winrt::Windows::UI::Core::CoreWindow> m_window;
 

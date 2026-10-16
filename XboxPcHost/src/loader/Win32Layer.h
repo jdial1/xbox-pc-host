@@ -32,6 +32,9 @@ void RegisterFiles(Win32Layer& layer);
 void RegisterFakes(Win32Layer& layer);
 void RegisterLoader(Win32Layer& layer);
 void RegisterWindow(Win32Layer& layer);
+void RegisterD3D(Win32Layer& layer);
+class GameDisplay;
+void SetGameDisplayForD3D(GameDisplay* display);
 
 // The game "process": what GetModuleHandle, GetModuleFileName, GetCommandLine
 // and ExitProcess report. One game runs at a time. Call from the game thread.

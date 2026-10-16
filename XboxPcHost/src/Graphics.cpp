@@ -131,19 +131,43 @@ void Graphics::CreateSizeDependentResources()
     HOST_LOG(L"Swapchain %ux%u (scale %.2f)", m_width, m_height, scale);
 }
 
+bool Graphics::ReleaseForGame()
+{
+    std::lock_guard lock(m_lock);
+    if (!m_swapChain)
+        return false;
+    m_d2dContext->SetTarget(nullptr);
+    m_d2dTarget = nullptr;
+    m_rtv = nullptr;
+    m_backBuffer = nullptr;
+    m_context->OMSetRenderTargets(0, nullptr, nullptr);
+    m_context->ClearState();
+    m_swapChain = nullptr;
+    m_context->Flush(); // destroys the released swapchain now, not later
+    m_handedOver = true;
+    HOST_LOG(L"shell swapchain released for the game");
+    return true;
+}
+
 void Graphics::OnWindowSizeChanged()
 {
+    std::lock_guard lock(m_lock);
+    if (m_handedOver) return;
     CreateSizeDependentResources();
 }
 
 void Graphics::Trim()
 {
+    std::lock_guard lock(m_lock);
+    if (m_handedOver) return;
     m_context->ClearState();
     m_device.as<IDXGIDevice3>()->Trim();
 }
 
 void Graphics::BeginFrame(float r, float g, float b)
 {
+    std::lock_guard lock(m_lock);
+    if (m_handedOver) return;
     const float color[4] = { r, g, b, 1.0f };
     ID3D11RenderTargetView* rtv = m_rtv.get();
     m_context->OMSetRenderTargets(1, &rtv, nullptr);
@@ -154,6 +178,8 @@ void Graphics::BeginFrame(float r, float g, float b)
 
 void Graphics::DrawTextLines(std::vector<std::wstring> const& lines, size_t highlight)
 {
+    std::lock_guard lock(m_lock);
+    if (m_handedOver) return;
     // TVs can crop up to ~5% on each edge.
     const float marginX = m_width * 0.06f;
     const float marginY = m_height * 0.06f;
@@ -175,6 +201,8 @@ void Graphics::DrawTextLines(std::vector<std::wstring> const& lines, size_t high
 
 void Graphics::Present()
 {
+    std::lock_guard lock(m_lock);
+    if (m_handedOver) return;
     HRESULT hr = m_swapChain->Present(1, 0);
     m_context->DiscardView1(m_rtv.get(), nullptr, 0);
 
