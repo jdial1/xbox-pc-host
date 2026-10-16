@@ -124,6 +124,7 @@
     <ClCompile Include="src\loader\Win32Window.cpp" />
     <ClCompile Include="src\loader\Win32D3D.cpp" />
     <ClCompile Include="src\loader\Win32Audio.cpp" />
+    <ClCompile Include="src\loader\Win32Gdi.cpp" />
     <ClCompile Include="src\loader\Win32Input.cpp" />
   </ItemGroup>
   <ItemGroup>

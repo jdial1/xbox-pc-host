@@ -54,9 +54,39 @@ namespace
             return job->hr;
         }
 
+        void PresentPixels(const uint32_t* bgra, UINT width, UINT height, UINT pitchBytes) override
+        {
+            // Only the newest frame matters; the UI thread draws it on its next pass. The alpha
+            // channel is forced opaque because GDI bitmaps leave it zero.
+            std::vector<uint32_t> copy(static_cast<size_t>(width) * height);
+            for (UINT y = 0; y < height; ++y)
+            {
+                auto row = reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(bgra) + static_cast<size_t>(y) * pitchBytes);
+                for (UINT x = 0; x < width; ++x)
+                    copy[static_cast<size_t>(y) * width + x] = row[x] | 0xFF000000;
+            }
+            std::lock_guard lock(m_lock);
+            m_frame = std::move(copy);
+            m_frameWidth = width;
+            m_frameHeight = height;
+        }
+
+        void GameEnded() override { m_graphics.ClearGameSurface(); }
+
         // UI thread, once per frame while the game runs.
         void Pump()
         {
+            std::vector<uint32_t> frame;
+            UINT frameWidth, frameHeight;
+            {
+                std::lock_guard lock(m_lock);
+                frame.swap(m_frame);
+                frameWidth = m_frameWidth;
+                frameHeight = m_frameHeight;
+            }
+            if (!frame.empty())
+                m_graphics.DrawGamePixels(frame.data(), frameWidth, frameHeight, frameWidth * 4);
+
             std::deque<std::shared_ptr<Job>> jobs;
             {
                 std::lock_guard lock(m_lock);
@@ -102,6 +132,8 @@ namespace
         Graphics& m_graphics;
         std::mutex m_lock;
         std::deque<std::shared_ptr<Job>> m_jobs;
+        std::vector<uint32_t> m_frame; // newest software frame not yet drawn
+        UINT m_frameWidth = 0, m_frameHeight = 0;
     };
 
     // Null where there is no CoreWindow, like the desktop test harness.
@@ -122,7 +154,7 @@ namespace
             if (m_thread)
             {
                 // Can't stop game code safely; keep its image mapped for good.
-                if (State() == RunState::Running)
+                if (State() == RunState::Running || m_leakImage)
                     (void)m_image.release();
                 CloseHandle(m_thread);
             }
@@ -144,6 +176,9 @@ namespace
             m_screen = std::make_unique<GraphicsDisplay>(host.graphics);
             SetGameDisplay(m_screen.get());
             AttachGameWindow(CurrentCoreWindow());
+            if (m_leakImage)
+                (void)m_image.release();
+            m_leakImage = false;
             m_image.reset();
             SetState(RunState::Idle);
 
@@ -239,6 +274,14 @@ namespace
             EXCEPTION_RECORD crash{};
             bool returned = CallEntry(m_image->EntryPoint(), exitCode, crash);
 
+            if (m_screen) m_screen->GameEnded();
+            if (size_t alive = GameThreadsAlive(200))
+            {
+                // No TerminateThread in the app partition, so these keep running; their code must stay mapped.
+                HOST_LOG(L"%zu game thread(s) still running; keeping the image mapped", alive);
+                m_leakImage = true;
+            }
+
             // ExitProcess unwinds here with its code, which is a clean exit.
             if (!returned && crash.ExceptionCode == kGameExitException)
             {
@@ -291,6 +334,7 @@ namespace
         Win32Layer m_win32;
         std::unique_ptr<PeImage> m_image;
         HANDLE m_thread = nullptr;
+        bool m_leakImage = false; // game threads outlived the game
         std::wstring m_name;
 
         mutable std::mutex m_lock;

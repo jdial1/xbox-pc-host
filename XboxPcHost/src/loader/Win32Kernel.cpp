@@ -17,6 +17,9 @@ namespace
         std::atomic<DWORD> exitCode{ 0 };
     } g_process;
 
+    std::mutex g_threadLock;
+    std::vector<HANDLE> g_threads;
+
     bool IsGameModule(HMODULE module) { return !module || module == g_process.base; }
 
     // The real functions' truncation rules: copy what fits, null-terminate, and
@@ -59,6 +62,21 @@ namespace
     LPWSTR WINAPI Shim_GetCommandLineW() { return g_process.commandLineW.data(); }
     LPSTR WINAPI Shim_GetCommandLineA() { return g_process.commandLineA.data(); }
 
+    // A game's threads outlive its main thread here, unlike in a real process that exits, so we keep
+    // a handle on each to see whether any are still running when the game ends.
+    HANDLE WINAPI Shim_CreateThread(LPSECURITY_ATTRIBUTES security, SIZE_T stackSize, LPTHREAD_START_ROUTINE start,
+        LPVOID parameter, DWORD flags, LPDWORD threadId)
+    {
+        HANDLE thread = CreateThread(security, stackSize, start, parameter, flags, threadId);
+        HANDLE copy = nullptr;
+        if (thread && DuplicateHandle(GetCurrentProcess(), thread, GetCurrentProcess(), &copy, SYNCHRONIZE, FALSE, 0))
+        {
+            std::lock_guard lock(g_threadLock);
+            g_threads.push_back(copy);
+        }
+        return thread;
+    }
+
     // Ends the game, not the host. The main thread unwinds to Run(); any other
     // game thread just stops.
     [[noreturn]] VOID WINAPI Shim_ExitProcess(UINT code)
@@ -94,6 +112,25 @@ void SetGameProcess(void* imageBase, std::filesystem::path const& exe)
     g_process.exitCode = 0;
 }
 
+size_t GameThreadsAlive(DWORD waitMs)
+{
+    std::lock_guard lock(g_threadLock);
+    size_t alive = 0;
+    for (HANDLE& thread : g_threads)
+    {
+        if (thread && WaitForSingleObject(thread, waitMs) == WAIT_OBJECT_0)
+        {
+            CloseHandle(thread);
+            thread = nullptr;
+        }
+        else if (thread)
+            ++alive;
+    }
+    if (!alive)
+        g_threads.clear();
+    return alive;
+}
+
 unsigned long GameExitCode() { return g_process.exitCode; }
 
 // kernel32 functions the game can call as they are. Taking the address of each
@@ -104,6 +141,7 @@ void RegisterKernel32(Win32Layer& layer)
     size_t count = 0;
 #define PASS(dll, fn) (layer.Register(dll "!" #fn, reinterpret_cast<void*>(&fn)), ++count)
 
+    layer.Register("kernel32!CreateThread", reinterpret_cast<void*>(&Shim_CreateThread));
     layer.Register("kernel32!ExitProcess", reinterpret_cast<void*>(&Shim_ExitProcess));
     layer.Register("kernel32!GetModuleHandleA", reinterpret_cast<void*>(&Shim_GetModuleHandleA));
     layer.Register("kernel32!GetModuleHandleW", reinterpret_cast<void*>(&Shim_GetModuleHandleW));
@@ -114,7 +152,6 @@ void RegisterKernel32(Win32Layer& layer)
 
     PASS("kernel32", CloseHandle);
     PASS("kernel32", CreateEventA);
-    PASS("kernel32", CreateThread);
     PASS("kernel32", DeleteCriticalSection);
     PASS("kernel32", EnterCriticalSection);
     PASS("kernel32", FindClose);

@@ -75,6 +75,19 @@ Small freestanding exes under `XboxPcHost/Games/` (sources and `build.cmd` in `t
 |---|---|---|
 | `loader-test` | mapping, imports, `ExitProcess` | code 42 |
 | `window-test` | window class, `WM_SIZE`/`WM_ACTIVATE`, keyboard, mouse, wheel | code 127 with `--inject keys` or `--inject pad` |
+| `gdi-test` | DIB section, memory DC, `BitBlt`, `SetDIBitsToDevice`, `GetDeviceCaps` | code 127 |
 | `audio-test` | `waveOut` open, play, `WHDR_DONE`, close | code 31 on a machine with an audio device (code 0 when there is none) |
 
 `--inject pad` drives the controller mapping in `src/InputMapping.cpp`; `--inject keys` drives a real keyboard and mouse.
+
+## ClassiCube's launcher
+
+Delete (or rename) `XboxPcHost/Games/classicube/host-args.txt` to start the launcher instead of
+singleplayer. It draws a 1920x1080 software bitmap through gdi32; the log shows
+`CreateDIBSection 1920x1080 top-down` and `first GDI frame 1920x1080`. On the console each
+`BitBlt` sends that bitmap to the screen; the harness has no screen, so it only logs the first frame.
+Its web requests (`ws2_32`) are not implemented, so the server list stays empty.
+
+A game's worker threads can outlive its main thread, and the app partition has no `TerminateThread`.
+When that happens the log says `N game thread(s) still running; keeping the image mapped` and the
+game's image stays mapped instead of being unmapped under those threads.

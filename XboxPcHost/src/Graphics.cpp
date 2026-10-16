@@ -149,6 +149,40 @@ bool Graphics::ReleaseForGame()
     return true;
 }
 
+bool Graphics::DrawGamePixels(const uint32_t* pixels, UINT width, UINT height, UINT pitchBytes)
+{
+    std::lock_guard lock(m_lock);
+    if (m_handedOver || !m_swapChain || !pixels || width == 0 || height == 0)
+        return false;
+    m_gameSurface = true;
+
+    D2D1_BITMAP_PROPERTIES1 props = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    com_ptr<ID2D1Bitmap1> bitmap;
+    if (FAILED(m_d2dContext->CreateBitmap(D2D1::SizeU(width, height), pixels, pitchBytes, &props, bitmap.put())))
+        return false;
+
+    m_d2dContext->BeginDraw();
+    m_d2dContext->Clear(D2D1::ColorF(D2D1::ColorF::Black));
+    m_d2dContext->DrawBitmap(bitmap.get(), D2D1::RectF(0, 0, static_cast<float>(m_width), static_cast<float>(m_height)),
+        1.0f, D2D1_INTERPOLATION_MODE_LINEAR);
+    HRESULT hr = m_d2dContext->EndDraw();
+    if (hr != D2DERR_RECREATE_TARGET) check_hresult(hr);
+
+    hr = m_swapChain->Present(1, 0);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+        HandleDeviceLost();
+    else
+        check_hresult(hr);
+    return true;
+}
+
+void Graphics::ClearGameSurface()
+{
+    std::lock_guard lock(m_lock);
+    m_gameSurface = false;
+}
+
 void Graphics::OnWindowSizeChanged()
 {
     std::lock_guard lock(m_lock);
@@ -167,7 +201,7 @@ void Graphics::Trim()
 void Graphics::BeginFrame(float r, float g, float b)
 {
     std::lock_guard lock(m_lock);
-    if (m_handedOver) return;
+    if (m_handedOver || m_gameSurface) return;
     const float color[4] = { r, g, b, 1.0f };
     ID3D11RenderTargetView* rtv = m_rtv.get();
     m_context->OMSetRenderTargets(1, &rtv, nullptr);
@@ -179,7 +213,7 @@ void Graphics::BeginFrame(float r, float g, float b)
 void Graphics::DrawTextLines(std::vector<std::wstring> const& lines, size_t highlight)
 {
     std::lock_guard lock(m_lock);
-    if (m_handedOver) return;
+    if (m_handedOver || m_gameSurface) return;
     // TVs can crop up to ~5% on each edge.
     const float marginX = m_width * 0.06f;
     const float marginY = m_height * 0.06f;
@@ -202,7 +236,7 @@ void Graphics::DrawTextLines(std::vector<std::wstring> const& lines, size_t high
 void Graphics::Present()
 {
     std::lock_guard lock(m_lock);
-    if (m_handedOver) return;
+    if (m_handedOver || m_gameSurface) return;
     HRESULT hr = m_swapChain->Present(1, 0);
     m_context->DiscardView1(m_rtv.get(), nullptr, 0);
 

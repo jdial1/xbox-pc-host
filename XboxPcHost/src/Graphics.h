@@ -15,6 +15,13 @@ public:
     // do nothing. Returns false if there was no swapchain to give up.
     bool ReleaseForGame();
     bool HandedOver() const { return m_handedOver; }
+
+    // Shows a game's software framebuffer (opaque BGRA, row pitch in bytes), stretched to the
+    // output, and presents it. While a game draws this way the shell's own drawing is off.
+    // Returns false if the swapchain isn't the shell's to draw on.
+    bool DrawGamePixels(const uint32_t* pixels, UINT width, UINT height, UINT pitchBytes);
+    // The game is done with the screen; the shell draws again.
+    void ClearGameSurface();
     winrt::Windows::UI::Core::CoreWindow Window() const { return m_window.get(); }
 
     // Clears the back buffer and binds it as the render target.
@@ -41,6 +48,7 @@ private:
     // The UI thread draws and a game thread can hand the window over, so both take this.
     std::mutex m_lock;
     bool m_handedOver = false;
+    bool m_gameSurface = false;
 
     winrt::agile_ref<winrt::Windows::UI::Core::CoreWindow> m_window;
 

@@ -35,8 +35,10 @@ void RegisterWindow(Win32Layer& layer);
 void RegisterD3D(Win32Layer& layer);
 void RegisterInput(Win32Layer& layer);
 void RegisterAudio(Win32Layer& layer);
+void RegisterGdi(Win32Layer& layer);
 class GameDisplay;
 void SetGameDisplayForD3D(GameDisplay* display);
+void SetGameDisplayForGdi(GameDisplay* display);
 
 // The game "process": what GetModuleHandle, GetModuleFileName, GetCommandLine
 // and ExitProcess report. One game runs at a time. Call from the game thread.
@@ -70,6 +72,11 @@ void DetachGameWindow();
 void PostGameMessage(UINT message, WPARAM wParam, LPARAM lParam);
 UINT GameScreenWidth();
 UINT GameScreenHeight();
+HDC GameWindowDc(); // what the game's GetDC(hwnd) returns
 
 // The XAudio2 engine winmm's waveOut plays through; null means no audio device.
 void SetGameAudio(IXAudio2* engine);
+
+// How many threads the game started are still running, after waiting up to waitMs for each.
+// Their code lives in the game's image, so the image can't be unmapped while any run.
+size_t GameThreadsAlive(DWORD waitMs);

@@ -301,6 +301,7 @@ void DetachGameWindow()
 void PostGameMessage(UINT message, WPARAM wParam, LPARAM lParam) { Post(message, wParam, lParam); }
 UINT GameScreenWidth() { return Width(); }
 UINT GameScreenHeight() { return Height(); }
+HDC GameWindowDc() { return kDc; }
 
 void SetGameDisplay(GameDisplay* display)
 {
@@ -309,6 +310,7 @@ void SetGameDisplay(GameDisplay* display)
         g_display = display;
     }
     SetGameDisplayForD3D(display);
+    SetGameDisplayForGdi(display);
 }
 
 void RegisterWindow(Win32Layer& layer)
