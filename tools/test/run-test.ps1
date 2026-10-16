@@ -18,11 +18,12 @@ param(
     [string[]] $Dependency = @(),
     [string] $PackageName = 'XboxPcHost',
     [int] $WaitSeconds = 30,
-    [string] $OutDir = (Join-Path $PSScriptRoot 'results'),
+    [string] $OutDir,
     [switch] $KeepRunning
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $OutDir) { $OutDir = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'results' }
 $haveLogin = [bool]($env:XBOX_USER -and $env:XBOX_PASS) # not needed when Device Portal has authentication turned off
 if (-not (Test-Path $Package)) { throw "Package not found: $Package" }
 if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) { throw 'curl.exe not found.' }
@@ -46,6 +47,8 @@ function Wdp([string] $Method, [string] $Path, [string[]] $Extra = @(), [string]
     if ($haveLogin) { $curlArgs += @('-K', '-') }
     if ($Method -ne 'GET') { $curlArgs += @('-H', "X-CSRF-Token: $(Csrf)") }
     if ($Out) { $curlArgs += @('-o', $Out) }
+    # Device Portal answers 411 to a POST with no body at all.
+    if ($Method -eq 'POST' -and $Extra.Count -eq 0) { $curlArgs += @('-H', 'Content-Length: 0') }
     $curlArgs += $Extra
     $curlArgs += "$base$Path"
     $result = if ($haveLogin) { "user = `"$($env:XBOX_USER):$($env:XBOX_PASS)`"" | & curl.exe @curlArgs } else { & curl.exe @curlArgs }
@@ -55,7 +58,8 @@ function Wdp([string] $Method, [string] $Path, [string[]] $Extra = @(), [string]
 
 function InstalledPackage {
     $json = Wdp GET '/api/app/packagemanager/packages' | ConvertFrom-Json
-    $json.InstalledPackages | Where-Object { $_.Name -eq $PackageName } | Select-Object -First 1
+    # .Name is the display name; the identity name starts the full name.
+    $json.InstalledPackages | Where-Object { $_.PackageFullName -like "${PackageName}_*" } | Select-Object -First 1
 }
 
 New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -99,7 +103,8 @@ try {
     }
 }
 finally {
-    Remove-Item $jar -ErrorAction SilentlyContinue
+    # The cookie jar is a scratch file; a failure to delete it must not hide the real error.
+    try { Remove-Item -LiteralPath $jar -Force -ErrorAction Stop } catch { }
 }
 
 # Get-Content decodes by BOM, so this works whether host.log is UTF-8 or UTF-16.
