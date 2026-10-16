@@ -28,6 +28,79 @@ Rules:
 - Do one task per change. Don't start the next task until the current one builds.
 - Never return null from `ResolveImport`; unknown imports get a logging fallback.
 
+### Interfaces you plug into (verbatim, as of commit 5b1db10)
+
+```cpp
+// src/loader/PeImage.h
+class ImportResolver {
+public:
+    virtual ~ImportResolver() = default;
+    // name is null when importing by ordinal. Never returns null.
+    virtual void* ResolveImport(const char* dll, const char* name, uint16_t ordinal) = 0;
+};
+class PeImage {   // non-copyable; unmaps and unregisters .pdata in its destructor
+public:
+    bool Load(std::filesystem::path const& path, ImportResolver& resolver, std::wstring& error);
+    uint8_t* Base() const;  size_t Size() const;  void* EntryPoint() const;  bool IsDll() const;
+    std::filesystem::path const& Path() const;  bool Contains(const void* p) const;
+    void* FindExport(const char* name) const;  void* FindExportByOrdinal(uint16_t ordinal) const;
+    std::vector<PIMAGE_TLS_CALLBACK> const& TlsCallbacks() const;
+};
+
+// src/GameRuntime.h -- the shell calls Start() when A is pressed, then Tick() every frame
+// while IsRunning(). LastMessage() is shown on the status screen.
+struct HostServices { Graphics& graphics; Input& input; Audio& audio; GameLibrary& library; };
+class IGameRuntime {
+public:
+    virtual bool Start(GameEntry const& game, HostServices& host) = 0;
+    virtual void Tick() = 0;  virtual void Stop() = 0;
+    virtual bool IsRunning() const = 0;
+    virtual std::wstring const& LastMessage() const = 0;
+};
+std::unique_ptr<IGameRuntime> CreateGameRuntime();   // GameRuntime.cpp; returns StubRuntime today
+
+// src/GameLibrary.h
+struct GameEntry { std::wstring name; std::filesystem::path folder; std::filesystem::path exe; bool writable; };
+
+// src/Graphics.h (what task 15 needs)
+IDXGISwapChain1* Graphics::SwapChain() const;   ID3D11Texture2D* Graphics::BackBuffer() const;
+void Graphics::Present();
+```
+
+`HOST_LOG` is printf-style with a wide format string and is safe to call from any thread
+(it takes a mutex). In MSVC wide formatting, `%s` means `wchar_t*` and `%S` means `char*`,
+so import names (`const char*`) are logged with `%S`.
+
+### Writing replacement functions
+
+- A replacement must have exactly the Win32 signature (return type and parameters) of the function
+  it replaces. On x64 `WINAPI` changes nothing, but keep it so the declarations match the SDK.
+- Name replacements `Shim_<Function>` (for example `Shim_CreateFileW`) and keep them `static` or in an
+  anonymous namespace in the file for that area (`Win32Kernel.cpp`, `Win32User.cpp`, ...).
+- Call `SetLastError` on failure paths like the real API; games check `GetLastError`.
+- They run on the game's thread, not the UI thread. Anything they share with the shell needs a lock.
+- Don't throw C++ exceptions or let `winrt::hresult_error` escape into game code; catch and return failure.
+- The A versions convert to UTF-16 (`MultiByteToWideChar(CP_ACP, ...)`) and call the W version.
+
+### Build and check your work
+
+From a VS 2022 Developer Command Prompt in the repo root:
+
+```
+msbuild XboxPcHost.sln /restore /p:RestorePackagesConfig=true /p:Configuration=Debug /p:Platform=x64 /m
+```
+
+The repo's `nuget.config` supplies the NuGet source. "BUILD: clean" means 0 errors and no new
+warnings. If you can't build, say so in BUILD; don't guess.
+
+### How your work gets tested
+
+You probably can't reach the Xbox. Push to `main` and report. Claude on the user's desktop
+(DESKTOP-QDUIOJJ) then pulls the commit, builds Release, installs it on the Xbox through Device
+Portal, launches the app, presses A on the game, and returns `host.log` and a screenshot. Matching is
+done on the exact log lines listed under "Expected log lines" below, so print those strings exactly
+(the values in `<>` vary). Unexpected crashes are diagnosed from the `crashed:` line, so keep its format.
+
 ## Tasks
 
 1. Resolver class: add `src/loader/Win32Layer.h/.cpp` with a class implementing `ImportResolver`,
@@ -82,6 +155,25 @@ Notes on tasks 1-8:
 18. Audio: the 8 winmm waveOut* functions onto one XAudio2 voice; set WHDR_DONE when a buffer finishes.
 19. Leftovers (gdi32, clipboard, shell32) stay stubbed unless the log shows they're needed.
 
+## Expected log lines
+
+These are the strings the tester looks for in `host.log`. Use these formats exactly.
+
+| Task | Line(s) |
+|------|---------|
+| 3 | `unresolved: <count> imports` then one `  unresolved <dll>!<Name>` per import (ordinal imports: `<dll>!#<n>`) |
+| 3 | at run time, once per import: `unimplemented call: <dll>!<Name>` (generic-stub version: `unimplemented call: <return address offset>`) |
+| 4 | `pass-through: <count> imports` |
+| 5 | `Mapped <exe file name> at <address> (<n> KB[, relocated])` (already printed by PeImage) |
+| 6 | `game thread started at entry +0x<rva>`, then one of `exited with code <n>` or `crashed: 0x<exception code> at +0x<offset> (<module name or "outside image">)` |
+| 7 | `ExitProcess(<n>)` |
+| 8 | shell status line `loader-test exited with code 42` |
+| 9 | `open <game path> -> <real path> : ok|<error>` for each CreateFile |
+| 12 | `LoadLibrary <name> -> fake 0x<handle>` and `GetProcAddress <dll>!<Name>` |
+| 13 | `CreateWindowEx class=<class> -> fake hwnd` |
+| 15 | `game swapchain <w>x<h> created on CoreWindow` and, once, `first game frame presented` |
+| 18 | `waveOutOpen <rate> Hz <bits>-bit <channels>ch` |
+
 ## Report back in this format
 
 After each task, paste this block into the project thread:
@@ -95,4 +187,5 @@ DEVIATIONS: <anything done differently from the task, and why; "none" if none>
 STILL STUBBED: <dll!Name list, task 4 onward>
 RUNTIME LOG: <relevant host.log lines, tasks 5 onward>
 QUESTIONS: <anything blocking>
+TEST: "test <task number> at <short hash>" (the line the user forwards to the desktop tester)
 ```
