@@ -28,6 +28,7 @@ private:
 // One per area of the Win32 surface (Win32Kernel.cpp, ...).
 void RegisterKernel32(Win32Layer& layer);
 void RegisterFiles(Win32Layer& layer);
+void RegisterFakes(Win32Layer& layer);
 
 // The game "process": what GetModuleHandle, GetModuleFileName, GetCommandLine
 // and ExitProcess report. One game runs at a time. Call from the game thread.

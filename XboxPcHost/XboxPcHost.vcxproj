@@ -115,6 +115,7 @@
     <ClCompile Include="src\loader\Win32Layer.cpp" />
     <ClCompile Include="src\loader\Win32Kernel.cpp" />
     <ClCompile Include="src\loader\Win32Files.cpp" />
+    <ClCompile Include="src\loader\Win32Fakes.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">
