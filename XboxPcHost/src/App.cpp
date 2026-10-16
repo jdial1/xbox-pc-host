@@ -28,7 +28,8 @@ struct App : implements<App, IFrameworkViewSource, IFrameworkView>
     {
         auto logPath = std::filesystem::path(ApplicationData::Current().LocalFolder().Path().c_str()) / L"host.log";
         host::log::Init(logPath);
-        HOST_LOG(L"XboxPcHost starting on %s", AnalyticsInfo::VersionInfo().DeviceFamily().c_str());
+        HOST_LOG(L"XboxPcHost starting on %s, memory limit %llu MB", AnalyticsInfo::VersionInfo().DeviceFamily().c_str(),
+            winrt::Windows::System::MemoryManager::AppMemoryUsageLimit() / (1024 * 1024));
 
         view.Activated({ this, &App::OnActivated });
         CoreApplication::Suspending({ this, &App::OnSuspending });
@@ -166,6 +167,9 @@ private:
                 pad.leftX, pad.leftY, pad.rightX, pad.rightY, pad.leftTrigger, pad.rightTrigger, pad.buttons);
         else
             swprintf_s(buf, L"Pad: not connected");
+        lines.push_back(buf);
+        // About 1 GB when registered as an App, several GB as a Game.
+        swprintf_s(buf, L"Memory limit: %llu MB", winrt::Windows::System::MemoryManager::AppMemoryUsageLimit() / (1024 * 1024));
         lines.push_back(buf);
         lines.push_back(std::wstring(L"Audio: ") + (m_audio.Ready() ? L"XAudio2 48 kHz stereo" : L"unavailable"));
         lines.push_back(L"Games folder: " + m_library.UserGamesRoot().wstring());
