@@ -14,18 +14,20 @@ send controller input. It reports whatever host.log holds after -WaitSeconds.
 #>
 param(
     [Parameter(Mandatory)] [string] $XboxIp,
-    [Parameter(Mandatory)] [string] $Package,
+    [string] $Package,
     [string[]] $Dependency = @(),
     [string] $PackageName = 'XboxPcHost',
     [int] $WaitSeconds = 30,
     [string] $OutDir,
+    [string] $Game,
+    [switch] $NoInstall,
     [switch] $KeepRunning
 )
 
 $ErrorActionPreference = 'Stop'
 if (-not $OutDir) { $OutDir = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'results' }
 $haveLogin = [bool]($env:XBOX_USER -and $env:XBOX_PASS) # not needed when Device Portal has authentication turned off
-if (-not (Test-Path $Package)) { throw "Package not found: $Package" }
+if (-not $NoInstall -and -not (Test-Path $Package)) { throw 'Give -Package, or -NoInstall to reuse what is installed.' }
 if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) { throw 'curl.exe not found.' }
 
 $base = "https://${XboxIp}:11443"
@@ -69,23 +71,43 @@ try {
     Wdp GET '/api/os/info' | Out-Null   # primes the CSRF cookie and proves the credentials work
     Write-Host "Connected to $XboxIp"
 
-    $old = InstalledPackage
-    if ($old) {
-        Write-Host "Uninstalling $($old.PackageFullName)"
-        Wdp DELETE "/api/app/packagemanager/package?package=$(Enc $old.PackageFullName)" | Out-Null
+    $pkg = InstalledPackage
+    $encodedFull = if ($pkg) { Enc $pkg.PackageFullName } else { '' }
+    if ($NoInstall) {
+        if (-not $pkg) { throw "$PackageName is not installed." }
+        # Start from a fresh process so the game named in -Game launches.
+        try { Wdp DELETE "/api/taskmanager/app?package=$(Enc (B64 $pkg.PackageFullName))&forcestop=true" | Out-Null } catch { }
+        Start-Sleep -Seconds 2
+    }
+    else {
+        if ($pkg) {
+            Write-Host "Uninstalling $($pkg.PackageFullName)"
+            Wdp DELETE "/api/app/packagemanager/package?package=$encodedFull" | Out-Null
+        }
+        Write-Host "Installing $(Split-Path $Package -Leaf)"
+        $form = @('-F', "file=@$Package")
+        foreach ($d in $Dependency) { $form += @('-F', "file=@$d") }
+        Wdp POST "/api/app/packagemanager/package?package=$(Enc (Split-Path $Package -Leaf))" $form | Out-Null
+
+        $deadline = (Get-Date).AddSeconds(120)
+        do {
+            Start-Sleep -Seconds 3
+            $pkg = InstalledPackage
+        } until ($pkg -or (Get-Date) -gt $deadline)
+        if (-not $pkg) {
+            $state = Wdp GET '/api/app/packagemanager/state'
+            throw "Install did not finish within 120 s. Device Portal says: $state"
+        }
+        $encodedFull = Enc $pkg.PackageFullName
     }
 
-    Write-Host "Installing $(Split-Path $Package -Leaf)"
-    $form = @('-F', "file=@$Package")
-    foreach ($d in $Dependency) { $form += @('-F', "file=@$d") }
-    Wdp POST "/api/app/packagemanager/package?package=$(Enc (Split-Path $Package -Leaf))" $form | Out-Null
-
-    $deadline = (Get-Date).AddSeconds(120)
-    do {
-        Start-Sleep -Seconds 3
-        $pkg = InstalledPackage
-    } until ($pkg -or (Get-Date) -gt $deadline)
-    if (-not $pkg) { throw 'Install did not finish within 120 s.' }
+    if ($Game) {
+        # The app reads this once, shortly after it starts, and launches that game as if A were pressed.
+        $autorun = Join-Path $env:TEMP 'autorun.txt'
+        Set-Content -Path $autorun -Value $Game -Encoding ascii
+        Wdp POST "/api/filesystem/apps/file?knownfolderid=LocalAppData&packagefullname=$encodedFull&path=%5C%5CLocalState" @('-F', "autorun.txt=@$autorun") | Out-Null
+        Write-Host "Queued autorun: $Game"
+    }
 
     Write-Host "Launching $($pkg.PackageRelativeId)"
     Wdp POST "/api/taskmanager/app?appid=$(Enc (B64 $pkg.PackageRelativeId))&package=$(Enc (B64 $pkg.PackageFullName))" | Out-Null
@@ -94,8 +116,12 @@ try {
     Start-Sleep -Seconds $WaitSeconds
 
     $log = Join-Path $OutDir "host-$stamp.log"
-    Wdp GET "/api/filesystem/apps/file?knownfolderid=LocalAppData&filename=host.log&packagefullname=$(Enc $pkg.PackageFullName)&path=%5C%5CLocalState" -Out $log | Out-Null
+    Wdp GET "/api/filesystem/apps/file?knownfolderid=LocalAppData&filename=host.log&packagefullname=$encodedFull&path=%5C%5CLocalState" -Out $log | Out-Null
     Write-Host "Saved $log"
+    # The log from before this launch, for when the app died and its replacement overwrote nothing useful.
+    try {
+        Wdp GET "/api/filesystem/apps/file?knownfolderid=LocalAppData&filename=host.prev.log&packagefullname=$encodedFull&path=%5C%5CLocalState" -Out (Join-Path $OutDir "host-$stamp.prev.log") | Out-Null
+    } catch { }
 
     if (-not $KeepRunning) {
         try { Wdp DELETE "/api/taskmanager/app?package=$(Enc (B64 $pkg.PackageFullName))&forcestop=true" | Out-Null }

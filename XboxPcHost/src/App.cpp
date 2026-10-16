@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <fstream>
 #include "Audio.h"
 #include "GameLibrary.h"
 #include "GameRuntime.h"
@@ -118,8 +119,42 @@ private:
         DrawShell();
     }
 
+    // A file named autorun.txt in LocalState holds a game's name; the shell starts that game once, as if
+    // A had been pressed on it. The file is renamed so each upload runs once. This lets the test script
+    // launch a game over Device Portal with nobody at the controller.
+    void TryAutorun()
+    {
+        if (m_autorunDone || ++m_frames < 120)
+            return;
+        m_autorunDone = true;
+        auto file = m_library.UserGamesRoot().parent_path() / L"autorun.txt";
+        std::ifstream in(file);
+        std::string name;
+        if (!in || !std::getline(in, name))
+            return;
+        in.close();
+        std::error_code ec;
+        std::filesystem::rename(file, file.parent_path() / L"autorun.used", ec);
+        while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
+
+        auto const& games = m_library.Games();
+        for (size_t i = 0; i < games.size(); ++i)
+        {
+            if (_wcsicmp(games[i].name.c_str(), std::wstring(name.begin(), name.end()).c_str()) != 0)
+                continue;
+            HOST_LOG(L"autorun: %s", games[i].name.c_str());
+            m_selected = i;
+            HostServices services{ m_graphics, m_input, m_audio, m_library };
+            m_runtime->Start(games[i], services);
+            m_launched = true;
+            return;
+        }
+        HOST_LOG(L"autorun: no game named %S", name.c_str());
+    }
+
     void UpdateShell()
     {
+        TryAutorun();
         PadState const& pad = m_input.Pad();
         auto const& games = m_library.Games();
 
@@ -195,6 +230,8 @@ private:
     Audio m_audio;
     GameLibrary m_library;
     std::unique_ptr<IGameRuntime> m_runtime;
+    bool m_autorunDone = false;
+    int m_frames = 0;
     bool m_launched = false; // a game was started; the shell shows the runtime's status line
 
     bool m_visible = true;
