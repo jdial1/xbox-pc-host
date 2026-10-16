@@ -9,3 +9,5 @@ BundleArtifacts/
 *.pfx
 deploy/
 tools/test/results/
+tools/host-test/out/
+XboxPcHost/Games/*/host.log

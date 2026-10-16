@@ -37,3 +37,21 @@ Exit code 0 is ok, 2 is `crashed:`, 3 is no loader lines in the log.
 `cl`-only compile check (what the first eight import-layer tasks used when the UWP workload
 was missing) catches compile and link errors but runs nothing. Only the console exercises the
 loader.
+
+## Desktop harness (no console, works over SSH)
+
+`tools/host-test` builds `host-test.exe`, which runs the app's own `PeImage`, `Win32Layer` and
+runtime code as a plain desktop console program. From a VS developer shell:
+
+```
+.\tools\host-test\build.ps1
+.\tools\host-test\out\host-test.exe XboxPcHost\Games\loader-test\loader-test.exe --expect "exited with code 42"
+```
+
+It prints the runtime's status line and writes `host.log` next to the exe. Exit code 0 is ok, 1 is a
+load failure or an unexpected end, 2 means `--expect` wasn't found, 3 is a timeout.
+
+What it proves: mapping, relocations, import binding, the unresolved list, the game thread, SEH crash
+reporting, and the process shims. What it can't: app container rules (VirtualProtectFromApp limits,
+the `codeGeneration` capability, blocked APIs) and anything graphical. Those need the console, or
+the MSIX installed on a Windows 10/11 client PC.
