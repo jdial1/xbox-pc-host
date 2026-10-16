@@ -56,3 +56,7 @@ HMODULE FakeModule(const char* dll);
 // The screen the game's window reports sizes for. Set before the game starts; null means a default size.
 class GameDisplay;
 void SetGameDisplay(GameDisplay* display);
+
+// Feeds the game's message loop WM_SIZE, WM_ACTIVATE and WM_CLOSE from the CoreWindow. UI thread only.
+void AttachGameWindow(winrt::Windows::UI::Core::CoreWindow const& window);
+void DetachGameWindow();

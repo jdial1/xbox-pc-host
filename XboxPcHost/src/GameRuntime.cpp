@@ -36,6 +36,13 @@ namespace
         Graphics& m_graphics;
     };
 
+    // Null where there is no CoreWindow, like the desktop test harness.
+    winrt::Windows::UI::Core::CoreWindow CurrentCoreWindow()
+    {
+        try { return winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread(); }
+        catch (...) { return nullptr; }
+    }
+
     // Maps the game's exe through the Win32 layer and runs its entry point on
     // its own thread. Status text is built on demand because the thread
     // changes the state while the shell is drawing.
@@ -65,6 +72,7 @@ namespace
             m_name = game.name;
             m_screen = std::make_unique<GraphicsDisplay>(host.graphics);
             SetGameDisplay(m_screen.get());
+            AttachGameWindow(CurrentCoreWindow());
             m_image.reset();
             SetState(RunState::Idle);
 
@@ -94,7 +102,7 @@ namespace
 
         // Nothing to draw until the game owns the swapchain.
         void Tick() override {}
-        void Stop() override {}
+        void Stop() override { DetachGameWindow(); }
         bool IsRunning() const override { return State() == RunState::Running; }
 
         std::wstring const& LastMessage() const override

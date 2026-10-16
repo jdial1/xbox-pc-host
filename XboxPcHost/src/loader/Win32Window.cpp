@@ -59,6 +59,19 @@ namespace
     HWND const kHwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x00010010));
     HDC const kDc = reinterpret_cast<HDC>(static_cast<uintptr_t>(0x00010020));
 
+    struct Msg
+    {
+        HWND hwnd;
+        UINT message;
+        WPARAM wParam;
+        LPARAM lParam;
+        DWORD time;
+        POINT pt;
+    };
+    static_assert(sizeof(Msg) == 48);
+
+    constexpr UINT kWmSize = 0x0005, kWmActivate = 0x0006, kWmClose = 0x0010;
+
     struct ClassEntry
     {
         std::wstring name; // lowercase
@@ -69,9 +82,29 @@ namespace
     GameDisplay* g_display = nullptr;
     std::vector<ClassEntry> g_classes; // atom = 0xC000 + index
     LONG g_style = kWsPopup | kWsVisible;
+    WndProc g_windowProc = nullptr; // the class the game made its window from
+
+    // Messages from CoreWindow events and window creation, waiting for the game's message loop.
+    std::deque<std::array<uintptr_t, 3>> g_queue;
+    constexpr size_t kMaxQueued = 256; // a game that never pumps messages mustn't grow this forever
+
+    winrt::event_token g_sizeToken, g_activatedToken, g_closedToken;
+    winrt::Windows::UI::Core::CoreWindow g_coreWindow{ nullptr };
 
     UINT Width() { return g_display ? g_display->Width() : 1280; }
     UINT Height() { return g_display ? g_display->Height() : 720; }
+
+    void Post(UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        std::lock_guard lock(g_lock);
+        if (g_queue.size() < kMaxQueued)
+            g_queue.push_back({ message, wParam, static_cast<uintptr_t>(lParam) });
+    }
+
+    void PostSize(UINT width, UINT height)
+    {
+        Post(kWmSize, 0 /* SIZE_RESTORED */, MAKELPARAM(width, height));
+    }
 
     std::wstring Lower(std::wstring s)
     {
@@ -114,6 +147,15 @@ namespace
     {
         std::wstring name = ClassName(cls, wide);
         HOST_LOG(L"CreateWindowEx class=%s -> fake hwnd", name.c_str());
+        {
+            std::lock_guard lock(g_lock);
+            for (auto const& c : g_classes)
+                if (c.name == name)
+                    g_windowProc = c.proc;
+        }
+        // A real window announces its size and activation as it is created.
+        PostSize(Width(), Height());
+        Post(kWmActivate, 1 /* WA_ACTIVE */, 0);
         return kHwnd;
     }
 
@@ -126,6 +168,38 @@ namespace
     {
         return MakeWindow(cls, false);
     }
+
+    BOOL PeekMessage(Msg* msg, HWND, UINT min, UINT max, UINT flags)
+    {
+        std::lock_guard lock(g_lock);
+        for (auto it = g_queue.begin(); it != g_queue.end(); ++it)
+        {
+            UINT message = static_cast<UINT>((*it)[0]);
+            if (max != 0 && (message < min || message > max))
+                continue;
+            *msg = { kHwnd, message, (*it)[1], static_cast<LPARAM>((*it)[2]), GetTickCount(), {} };
+            if (flags & 0x0001 /* PM_REMOVE */)
+                g_queue.erase(it);
+            return TRUE;
+        }
+        return FALSE;
+    }
+
+    BOOL WINAPI Shim_PeekMessageA(Msg* msg, HWND hwnd, UINT min, UINT max, UINT flags) { return PeekMessage(msg, hwnd, min, max, flags); }
+    BOOL WINAPI Shim_PeekMessageW(Msg* msg, HWND hwnd, UINT min, UINT max, UINT flags) { return PeekMessage(msg, hwnd, min, max, flags); }
+
+    // The game's own window procedure runs on the game's thread, like it would on Windows.
+    LRESULT WINAPI Shim_DispatchMessage(const Msg* msg)
+    {
+        WndProc proc;
+        {
+            std::lock_guard lock(g_lock);
+            proc = g_windowProc;
+        }
+        return proc ? proc(msg->hwnd, msg->message, msg->wParam, msg->lParam) : 0;
+    }
+
+    BOOL WINAPI Shim_TranslateMessage(const Msg*) { return FALSE; }
 
     LRESULT WINAPI Shim_DefWindowProc(HWND, UINT, WPARAM, LPARAM) { return 0; }
     BOOL WINAPI Shim_True() { return TRUE; }
@@ -195,6 +269,37 @@ namespace
     }
 }
 
+void AttachGameWindow(winrt::Windows::UI::Core::CoreWindow const& window)
+{
+    using namespace winrt::Windows::UI::Core;
+    DetachGameWindow();
+    if (!window)
+        return;
+    g_coreWindow = window;
+    // These run on the UI thread; the game's thread picks the messages up from the queue.
+    g_sizeToken = window.SizeChanged([](CoreWindow const&, WindowSizeChangedEventArgs const& args) {
+        double scale = winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView().RawPixelsPerViewPixel();
+        PostSize(static_cast<UINT>(std::lround(args.Size().Width * scale)), static_cast<UINT>(std::lround(args.Size().Height * scale)));
+    });
+    g_activatedToken = window.Activated([](CoreWindow const&, WindowActivatedEventArgs const& args) {
+        Post(kWmActivate, args.WindowActivationState() == CoreWindowActivationState::Deactivated ? 0 : 1, 0);
+    });
+    g_closedToken = window.Closed([](CoreWindow const&, CoreWindowEventArgs const&) { Post(kWmClose, 0, 0); });
+}
+
+void DetachGameWindow()
+{
+    if (g_coreWindow)
+    {
+        g_coreWindow.SizeChanged(g_sizeToken);
+        g_coreWindow.Activated(g_activatedToken);
+        g_coreWindow.Closed(g_closedToken);
+        g_coreWindow = nullptr;
+    }
+    std::lock_guard lock(g_lock);
+    g_queue.clear();
+}
+
 void SetGameDisplay(GameDisplay* display)
 {
     std::lock_guard lock(g_lock);
@@ -207,6 +312,11 @@ void RegisterWindow(Win32Layer& layer)
     SHIM(RegisterClassExA);
     SHIM(RegisterClassExW);
     SHIM(RegisterClassA);
+    SHIM(PeekMessageA);
+    SHIM(PeekMessageW);
+    SHIM(TranslateMessage);
+    layer.Register("user32!DispatchMessageA", reinterpret_cast<void*>(&Shim_DispatchMessage));
+    layer.Register("user32!DispatchMessageW", reinterpret_cast<void*>(&Shim_DispatchMessage));
     SHIM(CreateWindowExA);
     SHIM(CreateWindowExW);
     SHIM(GetClientRect);
