@@ -187,7 +187,7 @@ namespace
 
     HWND MakeWindow(const void* cls, bool wide, DWORD exStyle, DWORD style, HINSTANCE instance, LPVOID param)
     {
-        std::wstring name = ClassName(cls, wide);
+        std::wstring name = Lower(ClassName(cls, wide)); // class names are case-insensitive, and stored lowercase
         HOST_LOG(L"CreateWindowEx class=%s -> fake hwnd", name.c_str());
         WndProc proc = nullptr;
         {

@@ -33,11 +33,15 @@ namespace
         { GamepadButtons::Menu, VK_ESCAPE },
     };
 
+    // A resting stick reads a little off center; without this the pointer creeps and every frame is a move.
+    constexpr float kPointerDeadZone = 0.12f;
+    float Stick(float v) { return std::abs(v) < kPointerDeadZone ? 0.0f : Curve(v); }
+
     void MapPointer(PadState const& pad, float seconds, GameInputFrame& frame)
     {
         // Stick up moves the cursor up, which is -Y on screen.
-        frame.cursorDx += (Curve(pad.leftX) + Curve(pad.rightX)) * kCursorSpeed * seconds;
-        frame.cursorDy -= (Curve(pad.leftY) + Curve(pad.rightY)) * kCursorSpeed * seconds;
+        frame.cursorDx += (Stick(pad.leftX) + Stick(pad.rightX)) * kCursorSpeed * seconds;
+        frame.cursorDy -= (Stick(pad.leftY) + Stick(pad.rightY)) * kCursorSpeed * seconds;
 
         if (pad.Down(GamepadButtons::A) || pad.rightTrigger > kTriggerThreshold) frame.mouseButtons[0] = true;
         if (pad.Down(GamepadButtons::B) || pad.leftTrigger > kTriggerThreshold) frame.mouseButtons[1] = true;

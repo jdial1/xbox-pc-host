@@ -2,6 +2,7 @@
 #include "loader/Win32Layer.h"
 #include "loader/Win32Text.h"
 #include "Log.h"
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -14,6 +15,22 @@ namespace
     bool StartsWithNoCase(std::wstring const& s, std::wstring const& prefix)
     {
         return s.size() >= prefix.size() && _wcsnicmp(s.c_str(), prefix.c_str(), prefix.size()) == 0;
+    }
+
+    // Games open the same files over and over (OpenTTD searches every data folder for its music
+    // each time it rescans); each distinct result is logged once. File scope, not function statics:
+    // those bring the CRT's thread_local init guard into the host's TLS block (see Win32Tls.cpp).
+    std::mutex g_openLogLock;
+    std::unordered_set<std::wstring> g_openLogged;
+
+    void LogOpen(std::wstring line)
+    {
+        {
+            std::lock_guard guard(g_openLogLock);
+            if (!g_openLogged.insert(line).second)
+                return;
+        }
+        HOST_LOG(L"%s", line.c_str());
     }
 
     bool IsUnderRoot(fs::path const& p)
@@ -72,10 +89,8 @@ namespace
 
         HANDLE h = CreateFile2FromAppW(real.c_str(), access, share, disposition, &ext);
         DWORD error = GetLastError();
-        if (h == INVALID_HANDLE_VALUE)
-            HOST_LOG(L"open %s -> %s : error %lu", name ? name : L"(null)", real.c_str(), error);
-        else
-            HOST_LOG(L"open %s -> %s : ok", name ? name : L"(null)", real.c_str());
+        std::wstring line = L"open " + std::wstring(name ? name : L"(null)") + L" -> " + real.wstring();
+        LogOpen(h == INVALID_HANDLE_VALUE ? line + L" : error " + std::to_wstring(error) : line + L" : ok");
         SetLastError(error);
         return h;
     }

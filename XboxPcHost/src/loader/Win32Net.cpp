@@ -22,6 +22,22 @@ void RegisterNet(Win32Layer& layer)
 {
 #define WINSOCK(fn) layer.Register("ws2_32!" #fn, reinterpret_cast<void*>(&fn))
     WINSOCK(WSAStartup);
+    // The rest of Winsock is in the app partition too; servers and LAN games need these.
+    WINSOCK(accept);
+    WINSOCK(bind);
+    WINSOCK(listen);
+    WINSOCK(getpeername);
+    WINSOCK(getsockname);
+    WINSOCK(setsockopt);
+    WINSOCK(recvfrom);
+    WINSOCK(sendto);
+    WINSOCK(htonl);
+    WINSOCK(htons);
+    WINSOCK(ntohs);
+    WINSOCK(__WSAFDIsSet);
+    WINSOCK(WSAIoctl);
+    WINSOCK(getnameinfo);
+    layer.Register("bcrypt!BCryptGenRandom", reinterpret_cast<void*>(&BCryptGenRandom));
     WINSOCK(WSACleanup);
     WINSOCK(WSAGetLastError);
     WINSOCK(WSAStringToAddressA);

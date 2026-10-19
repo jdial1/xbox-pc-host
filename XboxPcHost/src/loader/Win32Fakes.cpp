@@ -149,6 +149,17 @@ namespace
         return 0;
     }
 
+    // No input method editor: there is no IME context, so games type plain characters.
+    LONG_PTR WINAPI Shim_ImmNone() { return 0; }
+    BOOL WINAPI Shim_ImmTrue() { return TRUE; }
+
+    // No WinHTTP in the app partition; games treat a failed WinHttpOpen as "no internet".
+    LONG_PTR WINAPI Shim_WinHttpUnsupported()
+    {
+        SetLastError(ERROR_NOT_SUPPORTED);
+        return 0;
+    }
+
     // The common dialogs aren't in the app partition. FALSE with no extended
     // error is what the game sees when the user cancels.
     BOOL WINAPI Shim_FileDialog(void*) { return FALSE; }
@@ -194,6 +205,14 @@ void RegisterFakes(Win32Layer& layer)
     FAKE("kernel32", TerminateThread, Shim_TerminateThread);
     FAKE("kernel32", VirtualQueryEx, Shim_VirtualQueryEx);
     FAKE("winmm", timeBeginPeriod, Shim_TimePeriod);
+    for (const char* name : { "ImmGetContext", "ImmGetProperty", "ImmSetCompositionWindow", "ImmSetCandidateWindow",
+        "ImmNotifyIME", "ImmGetCompositionStringW", "ImmAssociateContext" })
+        layer.Register((std::string("imm32!") + name).c_str(), reinterpret_cast<void*>(&Shim_ImmNone));
+    layer.Register("imm32!ImmReleaseContext", reinterpret_cast<void*>(&Shim_ImmTrue));
+    for (const char* name : { "WinHttpOpen", "WinHttpConnect", "WinHttpOpenRequest", "WinHttpSendRequest",
+        "WinHttpReceiveResponse", "WinHttpQueryDataAvailable", "WinHttpReadData", "WinHttpQueryHeaders",
+        "WinHttpCrackUrl", "WinHttpSetStatusCallback", "WinHttpSetTimeouts", "WinHttpCloseHandle" })
+        layer.Register((std::string("winhttp!") + name).c_str(), reinterpret_cast<void*>(&Shim_WinHttpUnsupported));
     FAKE("kernel32", AppPolicyGetProcessTerminationMethod, Shim_AppPolicyZero); // ExitProcess
     FAKE("kernel32", AppPolicyGetThreadInitializationType, Shim_AppPolicyZero); // none
     FAKE("kernel32", AppPolicyGetShowDeveloperDiagnostic, Shim_AppPolicyZero);  // none

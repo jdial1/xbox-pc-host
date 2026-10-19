@@ -9,9 +9,41 @@ std::string NormalizeDllName(const char* dll)
     if (s.size() > 4 && s.compare(s.size() - 4, 4, ".dll") == 0)
         s.resize(s.size() - 4);
     // These are forwarders into kernel32's functionality.
-    if (s == "kernelbase" || s.rfind("api-ms-win-core-", 0) == 0)
+    if (s == "kernelbase" || s.rfind("api-ms-win-core-", 0) == 0 || s.rfind("api-ms-win-appmodel-", 0) == 0)
         return "kernel32";
     return s;
+}
+
+namespace
+{
+    // ws2_32's ordinals have been fixed since Winsock 1.1, and games import by them.
+    const char* Ws2Name(uint16_t ordinal)
+    {
+        switch (ordinal)
+        {
+        case 1: return "accept"; case 2: return "bind"; case 3: return "closesocket"; case 4: return "connect";
+        case 5: return "getpeername"; case 6: return "getsockname"; case 7: return "getsockopt"; case 8: return "htonl";
+        case 9: return "htons"; case 10: return "ioctlsocket"; case 11: return "inet_addr"; case 12: return "inet_ntoa";
+        case 13: return "listen"; case 14: return "ntohl"; case 15: return "ntohs"; case 16: return "recv";
+        case 17: return "recvfrom"; case 18: return "select"; case 19: return "send"; case 20: return "sendto";
+        case 21: return "setsockopt"; case 22: return "shutdown"; case 23: return "socket"; case 51: return "gethostbyaddr";
+        case 52: return "gethostbyname"; case 53: return "getprotobyname"; case 54: return "getprotobynumber";
+        case 55: return "getservbyname"; case 56: return "getservbyport"; case 57: return "gethostname";
+        case 111: return "WSAGetLastError"; case 112: return "WSASetLastError"; case 115: return "WSAStartup";
+        case 116: return "WSACleanup"; case 151: return "__WSAFDIsSet";
+        default: return nullptr;
+        }
+    }
+
+    std::string ImportKey(const char* dll, const char* name, uint16_t ordinal)
+    {
+        std::string key = NormalizeDllName(dll);
+        if (!name && key == "ws2_32")
+            name = Ws2Name(ordinal);
+        key += '!';
+        key += name ? std::string(name) : "#" + std::to_string(ordinal);
+        return key;
+    }
 }
 
 Win32Layer::Win32Layer()
@@ -36,9 +68,7 @@ void Win32Layer::Register(const char* key, void* fn)
 
 void* Win32Layer::ResolveImport(const char* dll, const char* name, uint16_t ordinal)
 {
-    std::string key = NormalizeDllName(dll);
-    key += '!';
-    key += name ? std::string(name) : "#" + std::to_string(ordinal);
+    std::string key = ImportKey(dll, name, ordinal);
 
     // The game can resolve names at run time from any of its threads.
     std::lock_guard lock(m_lock);
@@ -57,9 +87,7 @@ void* Win32Layer::ResolveImport(const char* dll, const char* name, uint16_t ordi
 
 void* Win32Layer::Find(const char* dll, const char* name, uint16_t ordinal) const
 {
-    std::string key = NormalizeDllName(dll);
-    key += '!';
-    key += name ? std::string(name) : "#" + std::to_string(ordinal);
+    std::string key = ImportKey(dll, name, ordinal);
     std::lock_guard lock(m_lock);
     auto it = m_table.find(key);
     return it != m_table.end() ? it->second : nullptr;
