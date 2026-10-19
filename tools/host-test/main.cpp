@@ -7,7 +7,7 @@
 //                        <s> move <x> <y>   pointer to a window position (WM_MOUSEMOVE)
 //                        <s> click [right]  press and release a button where the pointer is
 //                        <s> key <vk>       press and release a virtual key (decimal, or 0x hex)
-//                        <s> text <word>    type the word as WM_CHAR messages (no spaces)
+//                        <s> text <words>   type the rest of the line (key down, WM_CHAR, key up each)
 //                        <s> shot <file>    save the newest frame as a BMP
 //                        <s> close          send WM_CLOSE
 // Exit code: 0 ok, 1 usage or load failure, 2 expectation not met, 3 timeout.
@@ -20,9 +20,47 @@
 #include "Log.h"
 #include <fstream>
 #include <sstream>
+#include <csignal>
+#include <exception>
 
 namespace
 {
+    // When the host's CRT is about to kill the process (abort, terminate, an invalid parameter to a
+    // _s function), say where from: module+offset per frame, "game+offset" inside the mapped exe.
+    void LogStack(const wchar_t* why)
+    {
+        void* frames[48];
+        USHORT count = RtlCaptureStackBackTrace(1, 48, frames, nullptr);
+        HOST_LOG(L"host-test: %s; stack:", why);
+        for (USHORT i = 0; i < count; ++i)
+        {
+            HMODULE module = nullptr;
+            wchar_t name[MAX_PATH] = L"";
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    static_cast<LPCWSTR>(frames[i]), &module))
+            {
+                GetModuleFileNameW(module, name, MAX_PATH);
+                HOST_LOG(L"  %s+0x%llx", std::filesystem::path(name).filename().c_str(),
+                    static_cast<unsigned long long>(static_cast<uint8_t*>(frames[i]) - reinterpret_cast<uint8_t*>(module)));
+            }
+            else
+                HOST_LOG(L"  game+0x%llx (or another unregistered image: %p)",
+                    static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) - 0x140000000ull), frames[i]);
+        }
+    }
+
+    void InstallCrashLogging()
+    {
+        std::signal(SIGABRT, [](int) { LogStack(L"abort()"); });
+        std::set_terminate([] {
+            LogStack(L"std::terminate");
+            std::_Exit(3);
+        });
+        _set_invalid_parameter_handler([](const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t) {
+            LogStack(L"invalid parameter to a CRT function");
+        });
+    }
+
     // The newest frame the game presented, kept for --shot and the script's "shot".
     std::mutex g_frameLock;
     std::vector<uint32_t> g_frame;
@@ -76,7 +114,14 @@ namespace
             Step step;
             if (!(words >> seconds >> step.action))
                 continue;
-            words >> step.a >> step.b;
+            if (step.action == L"text")
+            {
+                std::getline(words, step.a); // the rest of the line, spaces included
+                step.a.erase(0, step.a.find_first_not_of(L" 	"));
+                step.a.erase(step.a.find_last_not_of(L" 	") + 1);
+            }
+            else
+                words >> step.a >> step.b;
             step.ms = static_cast<int>(seconds * 1000);
             steps.push_back(step);
         }
@@ -115,7 +160,7 @@ namespace
             // Each character as a real keyboard delivers it: key down, the character, key up.
             for (wchar_t c : step.a)
             {
-                auto vk = static_cast<WPARAM>(std::iswalnum(c) ? std::towupper(c) : 0);
+                auto vk = static_cast<WPARAM>(std::iswalnum(c) || c == L' ' ? std::towupper(c) : 0);
                 if (vk) PostGameMessage(kWmKeyDown, vk, 1);
                 PostGameMessage(0x0102 /* WM_CHAR */, c, 1);
                 if (vk) PostGameMessage(kWmKeyUp, vk, 0xC0000001);
@@ -155,6 +200,7 @@ int wmain(int argc, wchar_t** argv)
     }
 
     host::log::Init(exe.parent_path() / L"host.log");
+    InstallCrashLogging();
 
     // The runtime only touches the library for bundled games; writable entries skip that.
     GameEntry game{ exe.parent_path().filename().wstring(), exe.parent_path(), exe, true };

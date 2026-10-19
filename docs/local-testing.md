@@ -59,9 +59,13 @@ the MSIX installed on a Windows 10/11 client PC.
 Games that draw through GDI (OpenTTD, gdi-test, ClassiCube's launcher) can be watched and driven:
 
 - `--shot file.bmp` saves the last software frame when the run ends.
+- If the host's CRT is about to end the process (abort, std::terminate, an invalid parameter to a
+  `_s` function), host.log gets the call stack as module+offset, with `game+offset` for the exe.
+- `tools/exception-test` (build.cmd from a VS prompt) checks C++ throw/catch and unwinding in a
+  statically linked exe: `host-test.exe XboxPcHost\Games\exception-test\exception-test.exe --expect "exited with code 42"`.
 - `--script file` runs timed steps, one per line, in seconds from the game's start:
-  `<s> move <x> <y>`, `<s> click [right]`, `<s> key <vk>` (decimal or `0x` hex), `<s> text <word>`
-  (types it, key down/char/key up per letter), `<s> shot <file.bmp>`, `<s> close`. `#` starts a comment.
+  `<s> move <x> <y>`, `<s> click [right]`, `<s> key <vk>` (decimal or `0x` hex), `<s> text <words>`
+  (types the rest of the line, key down/char/key up per character), `<s> shot <file.bmp>`, `<s> close`. `#` starts a comment.
 
 For example, this gets OpenTTD from its title screen into a new game at 1920x1080 (positions are
 window pixels; `host-args.txt` should pass `-r 1920x1080`):
