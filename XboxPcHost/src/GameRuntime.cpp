@@ -318,7 +318,7 @@ namespace
             }
 
             fs::path dest = host.library.UserGamesRoot() / game.name;
-            exe = dest / fs::relative(game.exe, game.folder);
+            exe = dest / game.exe.lexically_relative(game.folder); // fs::relative opens the read-only package folder and throws
 
             std::error_code ec;
             fs::create_directories(dest, ec);
