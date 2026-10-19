@@ -192,6 +192,28 @@ void SetGameAudio(IXAudio2* engine)
     g_engine = engine;
 }
 
+namespace
+{
+    DWORD WINAPI Shim_timeGetTime() { return static_cast<DWORD>(GetTickCount64()); }
+
+    UINT WINAPI Shim_timeGetDevCaps(UINT* caps, UINT size)
+    {
+        if (!caps || size < 2 * sizeof(UINT))
+            return 97; // TIMERR_NOCANDO
+        caps[0] = 1;       // wPeriodMin, ms
+        caps[1] = 1000000; // wPeriodMax
+        return 0;
+    }
+
+    // Multimedia timer callbacks (used for MIDI playback) aren't offered; games check for 0.
+    UINT WINAPI Shim_timeSetEvent(UINT, UINT, void*, DWORD_PTR, UINT) { return 0; }
+    UINT WINAPI Shim_timeKillEvent(UINT) { return 97; } // TIMERR_NOCANDO: no such timer
+
+    // No MIDI devices.
+    UINT WINAPI Shim_midiOutGetNumDevs() { return 0; }
+    UINT WINAPI Shim_MidiNoDriver() { return 6; } // MMSYSERR_NODRIVER
+}
+
 void RegisterAudio(Win32Layer& layer)
 {
 #define SHIM(fn) layer.Register("winmm!" #fn, reinterpret_cast<void*>(&Shim_##fn))
@@ -203,5 +225,13 @@ void RegisterAudio(Win32Layer& layer)
     SHIM(waveOutWrite);
     SHIM(waveOutReset);
     SHIM(waveOutGetErrorTextA);
+    SHIM(timeGetTime);
+    SHIM(timeGetDevCaps);
+    SHIM(timeSetEvent);
+    SHIM(timeKillEvent);
+    SHIM(midiOutGetNumDevs);
+    for (const char* name : { "midiOutGetDevCapsW", "midiOutOpen", "midiOutClose", "midiOutReset", "midiOutLongMsg",
+        "midiOutShortMsg", "midiOutPrepareHeader", "midiOutUnprepareHeader" })
+        layer.Register((std::string("winmm!") + name).c_str(), reinterpret_cast<void*>(&Shim_MidiNoDriver));
 #undef SHIM
 }

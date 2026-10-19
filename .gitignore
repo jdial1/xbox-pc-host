@@ -12,3 +12,4 @@ tools/test/results/
 tools/host-test/out/
 XboxPcHost/Games/*/host.log
 XboxPcHost/Games/*/host.prev.log
+XboxPcHost/Games/openttd/

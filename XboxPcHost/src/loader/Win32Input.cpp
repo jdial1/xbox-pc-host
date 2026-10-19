@@ -128,6 +128,8 @@ void FeedGameInput(GameInputFrame const& frame)
 void RegisterInput(Win32Layer& layer)
 {
     layer.Register("user32!GetKeyState", reinterpret_cast<void*>(&Shim_GetKeyState));
+    // Only the high "down now" bit is ever set, which is what both report.
+    layer.Register("user32!GetAsyncKeyState", reinterpret_cast<void*>(&Shim_GetKeyState));
     layer.Register("user32!GetCursorPos", reinterpret_cast<void*>(&Shim_GetCursorPos));
     layer.Register("user32!SetCursorPos", reinterpret_cast<void*>(&Shim_SetCursorPos));
 }

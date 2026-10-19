@@ -3,8 +3,8 @@
 #include "loader/GameDisplay.h"
 #include "Log.h"
 
-// Just enough gdi32 for a game that draws its menus into a software bitmap and
-// copies that to its window (ClassiCube's launcher does). A DIB section is
+// Just enough gdi32 for a game that draws into a software bitmap and copies
+// that to its window (ClassiCube's launcher, OpenTTD's GDI driver). A DIB section is
 // plain memory; a memory DC only remembers which bitmap is selected into it;
 // copying a bitmap to the window DC sends its pixels to the screen.
 // The window DC itself is the fake one user32's GetDC hands out.
@@ -29,9 +29,12 @@ namespace
     {
         int width = 0, height = 0; // height is positive; topDown says how rows are stored
         bool topDown = true;
-        uint32_t* bits = nullptr;
-        size_t Bytes() const { return static_cast<size_t>(width) * height * 4; }
-        size_t Pitch() const { return static_cast<size_t>(width) * 4; }
+        int bitCount = 32; // 32, or 8 with a color table
+        uint8_t* bits = nullptr;
+        std::array<uint32_t, 256> colors{}; // BGRX entries for 8-bit bitmaps
+        size_t Pitch() const { return (static_cast<size_t>(width) * bitCount + 31) / 32 * 4; } // rows are DWORD aligned
+        size_t Bytes() const { return Pitch() * height; }
+        const uint8_t* Row(int y) const { return bits + Pitch() * (topDown ? y : height - 1 - y); }
     };
 
     struct MemoryDc
@@ -72,17 +75,25 @@ namespace
 
     void ShowBitmap(Bitmap const& bitmap)
     {
-        if (bitmap.topDown)
+        if (bitmap.bitCount == 32 && bitmap.topDown)
         {
-            Show(bitmap.bits, bitmap.width, bitmap.height, bitmap.Pitch());
+            Show(reinterpret_cast<const uint32_t*>(bitmap.bits), bitmap.width, bitmap.height, bitmap.Pitch());
             return;
         }
-        // Bottom-up: the first row in memory is the last on screen, so a negative pitch walks it backwards.
-        auto last = reinterpret_cast<const uint8_t*>(bitmap.bits) + bitmap.Pitch() * (bitmap.height - 1);
-        std::vector<uint32_t> flipped(static_cast<size_t>(bitmap.width) * bitmap.height);
+        // Bottom-up rows are flipped, and 8-bit pixels looked up in the color table, into a top-down copy.
+        const size_t w = static_cast<size_t>(bitmap.width);
+        std::vector<uint32_t> out(w * bitmap.height);
         for (int y = 0; y < bitmap.height; ++y)
-            memcpy(&flipped[static_cast<size_t>(y) * bitmap.width], last - bitmap.Pitch() * y, bitmap.Pitch());
-        Show(flipped.data(), bitmap.width, bitmap.height, bitmap.Pitch());
+        {
+            const uint8_t* row = bitmap.Row(y);
+            uint32_t* dst = &out[static_cast<size_t>(y) * w];
+            if (bitmap.bitCount == 32)
+                memcpy(dst, row, w * 4);
+            else
+                for (size_t x = 0; x < w; ++x)
+                    dst[x] = bitmap.colors[row[x]];
+        }
+        Show(out.data(), bitmap.width, bitmap.height, w * 4);
     }
 
     HDC WINAPI Shim_CreateCompatibleDC(HDC)
@@ -111,8 +122,10 @@ namespace
             SetLastError(ERROR_INVALID_PARAMETER);
             return nullptr;
         }
-        // Compression 0 (BI_RGB) or 3 (BI_BITFIELDS) at 32 bits is the only layout games use for framebuffers.
-        if (header->bitCount != 32 || (header->compression != 0 && header->compression != 3))
+        // 32-bit BI_RGB/BI_BITFIELDS or 8-bit BI_RGB with a color table: the layouts games use for framebuffers.
+        bool supported = (header->bitCount == 32 && (header->compression == 0 || header->compression == 3)) ||
+            (header->bitCount == 8 && header->compression == 0);
+        if (!supported)
         {
             HOST_LOG(L"CreateDIBSection: unsupported format %u-bit, compression %lu", header->bitCount, header->compression);
             SetLastError(ERROR_INVALID_PARAMETER);
@@ -123,7 +136,16 @@ namespace
         bitmap->width = header->width;
         bitmap->height = std::abs(header->height);
         bitmap->topDown = header->height < 0;
-        bitmap->bits = static_cast<uint32_t*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bitmap->Bytes()));
+        bitmap->bitCount = header->bitCount;
+        if (bitmap->bitCount == 8)
+        {
+            // The color table follows the header, whichever header version it is.
+            auto table = reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(header) + header->size);
+            size_t count = header->colorsUsed ? std::min<size_t>(header->colorsUsed, 256) : 256;
+            for (size_t i = 0; i < count; ++i)
+                bitmap->colors[i] = table[i] | 0xFF000000;
+        }
+        bitmap->bits = static_cast<uint8_t*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bitmap->Bytes()));
         if (!bitmap->bits)
         {
             SetLastError(ERROR_NOT_ENOUGH_MEMORY);
@@ -131,7 +153,8 @@ namespace
         }
         if (bits)
             *bits = bitmap->bits;
-        HOST_LOG(L"CreateDIBSection %dx%d %s", bitmap->width, bitmap->height, bitmap->topDown ? L"top-down" : L"bottom-up");
+        HOST_LOG(L"CreateDIBSection %dx%d %d-bit %s", bitmap->width, bitmap->height, bitmap->bitCount,
+            bitmap->topDown ? L"top-down" : L"bottom-up");
 
         Bitmap* raw = bitmap.release();
         std::lock_guard lock(g_lock);
@@ -184,9 +207,12 @@ namespace
         if (!to || !to->selected)
             return FALSE;
 
-        // Copy between two bitmaps, clipped to both.
+        // Copy between two bitmaps of the same depth, clipped to both.
         Bitmap const& src = *from->selected;
         Bitmap& dst = *to->selected;
+        if (src.bitCount != dst.bitCount)
+            return FALSE;
+        const size_t bytes = static_cast<size_t>(src.bitCount / 8);
         for (int row = 0; row < height; ++row)
         {
             int sy = sourceY + row, dy = y + row;
@@ -195,10 +221,7 @@ namespace
             int count = std::min({ width, src.width - sourceX, dst.width - x });
             if (count <= 0 || sourceX < 0 || x < 0)
                 continue;
-            int srcRow = src.topDown ? sy : src.height - 1 - sy;
-            int dstRow = dst.topDown ? dy : dst.height - 1 - dy;
-            memcpy(dst.bits + static_cast<size_t>(dstRow) * dst.width + x, src.bits + static_cast<size_t>(srcRow) * src.width + sourceX,
-                static_cast<size_t>(count) * 4);
+            memcpy(const_cast<uint8_t*>(dst.Row(dy)) + x * bytes, src.Row(sy) + sourceX * bytes, count * bytes);
         }
         return TRUE;
     }
@@ -215,7 +238,7 @@ namespace
         view.width = header->width;
         view.height = static_cast<int>(lines);
         view.topDown = header->height < 0;
-        view.bits = const_cast<uint32_t*>(static_cast<const uint32_t*>(bits));
+        view.bits = const_cast<uint8_t*>(static_cast<const uint8_t*>(bits));
         ShowBitmap(view);
         return static_cast<int>(lines);
     }
@@ -232,6 +255,40 @@ namespace
         default: return 0;
         }
     }
+}
+
+namespace
+{
+    // Replaces part of the color table of the 8-bit bitmap selected into a memory DC.
+    UINT WINAPI Shim_SetDIBColorTable(HDC hdc, UINT start, UINT count, const uint32_t* colors)
+    {
+        std::lock_guard lock(g_lock);
+        MemoryDc* dc = AsMemoryDc(hdc);
+        if (!dc || !dc->selected || dc->selected->bitCount != 8 || !colors || start >= 256)
+            return 0;
+        count = std::min(count, 256 - start);
+        for (UINT i = 0; i < count; ++i)
+            dc->selected->colors[start + i] = colors[i] | 0xFF000000;
+        return count;
+    }
+
+    // Palettes only matter on 8-bit displays, and ours is 32-bit: DIB color tables carry the colors.
+    HGDIOBJ WINAPI Shim_CreatePalette(const void*) { return kStockObject; }
+    HGDIOBJ WINAPI Shim_SelectPalette(HDC, HGDIOBJ, BOOL) { return kStockObject; }
+    UINT WINAPI Shim_RealizePalette(HDC) { return 0; }
+    HGDIOBJ WINAPI Shim_GetStockObject(int) { return kStockObject; }
+    int WINAPI Shim_SetMapMode(HDC, int) { return 1; } // the previous mode, MM_TEXT
+
+    // No GDI fonts: games fall back to their own (OpenTTD to its sprite font).
+    int WINAPI Shim_AddFontResourceExW(LPCWSTR, DWORD, PVOID) { return 0; }
+    HGDIOBJ WINAPI Shim_CreateFontIndirectW(const void*) { return nullptr; }
+    int WINAPI Shim_EnumFontFamiliesExW(HDC, void*, void*, LPARAM, DWORD) { return 0; }
+    DWORD WINAPI Shim_GdiError() { return GDI_ERROR; } // GetGlyphIndicesW, GetGlyphOutlineW
+    UINT WINAPI Shim_GetOutlineTextMetricsW(HDC, UINT, void*) { return 0; }
+
+    // No OpenGL on the console; a game that asks gets no pixel format and moves on.
+    int WINAPI Shim_ChoosePixelFormat(HDC, const void*) { return 0; }
+    BOOL WINAPI Shim_GdiFalse() { return FALSE; } // SetPixelFormat, SwapBuffers
 }
 
 void SetGameDisplayForGdi(GameDisplay* display)
@@ -251,5 +308,20 @@ void RegisterGdi(Win32Layer& layer)
     SHIM(BitBlt);
     SHIM(SetDIBitsToDevice);
     SHIM(GetDeviceCaps);
+    SHIM(SetDIBColorTable);
+    SHIM(CreatePalette);
+    SHIM(SelectPalette);
+    SHIM(RealizePalette);
+    SHIM(GetStockObject);
+    SHIM(SetMapMode);
+    SHIM(AddFontResourceExW);
+    SHIM(CreateFontIndirectW);
+    SHIM(EnumFontFamiliesExW);
+    SHIM(GetOutlineTextMetricsW);
+    SHIM(ChoosePixelFormat);
 #undef SHIM
+    layer.Register("gdi32!GetGlyphIndicesW", reinterpret_cast<void*>(&Shim_GdiError));
+    layer.Register("gdi32!GetGlyphOutlineW", reinterpret_cast<void*>(&Shim_GdiError));
+    layer.Register("gdi32!SetPixelFormat", reinterpret_cast<void*>(&Shim_GdiFalse));
+    layer.Register("gdi32!SwapBuffers", reinterpret_cast<void*>(&Shim_GdiFalse));
 }

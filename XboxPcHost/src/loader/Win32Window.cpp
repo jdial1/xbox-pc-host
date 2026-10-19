@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <map>
 #include "loader/Win32Layer.h"
 #include "loader/GameDisplay.h"
 #include "loader/Win32Text.h"
@@ -50,14 +51,52 @@ namespace
     };
     static_assert(sizeof(WindowPlacement) == 44);
 
+    struct CreateStruct // CREATESTRUCTW
+    {
+        LPVOID createParams;
+        HINSTANCE instance;
+        HMENU menu;
+        HWND parent;
+        int cy, cx, y, x;
+        LONG style;
+        LPCWSTR name;
+        LPCWSTR className;
+        DWORD exStyle;
+    };
+    static_assert(sizeof(CreateStruct) == 80);
+
+    struct MonitorInfo // MONITORINFOEXW; plain MONITORINFO stops before device
+    {
+        DWORD size;
+        RECT monitor, work;
+        DWORD flags;
+        WCHAR device[32];
+    };
+    static_assert(sizeof(MonitorInfo) == 104);
+
+    struct DevMode // DEVMODEW, display fields only
+    {
+        WCHAR deviceName[32];
+        WORD specVersion, driverVersion, size, driverExtra;
+        DWORD fields;
+        BYTE unionPart[16];
+        short color, duplex, yResolution, ttOption, collate;
+        WCHAR formName[32];
+        WORD logPixels;
+        DWORD bitsPerPel, pelsWidth, pelsHeight, displayFlags, displayFrequency;
+    };
+    static_assert(offsetof(DevMode, bitsPerPel) == 168 && offsetof(DevMode, displayFrequency) == 184);
+
     constexpr int kSmCxScreen = 0, kSmCyScreen = 1, kSmCxFullScreen = 16, kSmCyFullScreen = 17,
         kSmCxVirtualScreen = 78, kSmCyVirtualScreen = 79;
-    constexpr int kGwlStyle = -16;
+    constexpr int kGwlStyle = -16, kGwlExStyle = -20, kGwlpUserData = -21;
     constexpr UINT kWsPopup = 0x80000000, kWsVisible = 0x10000000;
 
     // The only window: nothing else needs to tell windows apart.
     HWND const kHwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x00010010));
     HDC const kDc = reinterpret_cast<HDC>(static_cast<uintptr_t>(0x00010020));
+    HWND const kDesktop = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x00010011));
+    HMONITOR const kMonitor = reinterpret_cast<HMONITOR>(static_cast<uintptr_t>(0x00010060));
 
     struct Msg
     {
@@ -70,7 +109,8 @@ namespace
     };
     static_assert(sizeof(Msg) == 48);
 
-    constexpr UINT kWmSize = 0x0005, kWmActivate = 0x0006, kWmClose = 0x0010, kWmChar = 0x0102;
+    constexpr UINT kWmCreate = 0x0001, kWmSize = 0x0005, kWmActivate = 0x0006, kWmClose = 0x0010, kWmNcCreate = 0x0081,
+        kWmChar = 0x0102;
 
     struct ClassEntry
     {
@@ -82,6 +122,7 @@ namespace
     GameDisplay* g_display = nullptr;
     std::vector<ClassEntry> g_classes; // atom = 0xC000 + index
     LONG g_style = kWsPopup | kWsVisible;
+    std::map<int, LONG_PTR> g_longs; // the window's other GetWindowLong values (GWLP_USERDATA, ...)
     WndProc g_windowProc = nullptr; // the class the game made its window from
 
     // Messages from CoreWindow events and window creation, waiting for the game's message loop.
@@ -142,16 +183,28 @@ namespace
     ATOM WINAPI Shim_RegisterClassExW(const WndClassEx* c) { return Register(static_cast<const wchar_t*>(c->name), c->proc); }
     ATOM WINAPI Shim_RegisterClassExA(const WndClassEx* c) { return Register(Widen(static_cast<const char*>(c->name)), c->proc); }
     ATOM WINAPI Shim_RegisterClassA(const WndClass* c) { return Register(Widen(static_cast<const char*>(c->name)), c->proc); }
+    ATOM WINAPI Shim_RegisterClassW(const WndClass* c) { return Register(static_cast<const wchar_t*>(c->name), c->proc); }
 
-    HWND MakeWindow(const void* cls, bool wide)
+    HWND MakeWindow(const void* cls, bool wide, DWORD exStyle, DWORD style, HINSTANCE instance, LPVOID param)
     {
         std::wstring name = ClassName(cls, wide);
         HOST_LOG(L"CreateWindowEx class=%s -> fake hwnd", name.c_str());
+        WndProc proc = nullptr;
         {
             std::lock_guard lock(g_lock);
             for (auto const& c : g_classes)
                 if (c.name == name)
-                    g_windowProc = c.proc;
+                    proc = g_windowProc = c.proc;
+            g_longs.clear();
+        }
+        // Before CreateWindowEx returns, the window procedure sees WM_NCCREATE and WM_CREATE on this
+        // thread; games keep their per-window object from lpCreateParams.
+        if (proc)
+        {
+            CreateStruct cs{ param, instance, nullptr, nullptr, static_cast<int>(Height()), static_cast<int>(Width()), 0, 0,
+                static_cast<LONG>(style), nullptr, name.c_str(), exStyle };
+            proc(kHwnd, kWmNcCreate, 0, reinterpret_cast<LPARAM>(&cs));
+            proc(kHwnd, kWmCreate, 0, reinterpret_cast<LPARAM>(&cs));
         }
         // A real window announces its size and activation as it is created.
         PostSize(Width(), Height());
@@ -159,14 +212,16 @@ namespace
         return kHwnd;
     }
 
-    HWND WINAPI Shim_CreateWindowExW(DWORD, LPCWSTR cls, LPCWSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID)
+    HWND WINAPI Shim_CreateWindowExW(DWORD exStyle, LPCWSTR cls, LPCWSTR, DWORD style, int, int, int, int, HWND, HMENU,
+        HINSTANCE instance, LPVOID param)
     {
-        return MakeWindow(cls, true);
+        return MakeWindow(cls, true, exStyle, style, instance, param);
     }
 
-    HWND WINAPI Shim_CreateWindowExA(DWORD, LPCSTR cls, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID)
+    HWND WINAPI Shim_CreateWindowExA(DWORD exStyle, LPCSTR cls, LPCSTR, DWORD style, int, int, int, int, HWND, HMENU,
+        HINSTANCE instance, LPVOID param)
     {
-        return MakeWindow(cls, false);
+        return MakeWindow(cls, false, exStyle, style, instance, param);
     }
 
     BOOL PeekMessage(Msg* msg, HWND, UINT min, UINT max, UINT flags)
@@ -201,7 +256,8 @@ namespace
 
     BOOL WINAPI Shim_TranslateMessage(const Msg*) { return FALSE; }
 
-    LRESULT WINAPI Shim_DefWindowProc(HWND, UINT, WPARAM, LPARAM) { return 0; }
+    // WM_NCCREATE has to answer TRUE or Windows would abandon the window; nothing else needs an answer.
+    LRESULT WINAPI Shim_DefWindowProc(HWND, UINT message, WPARAM, LPARAM) { return message == kWmNcCreate; }
     BOOL WINAPI Shim_True() { return TRUE; }
 
     BOOL WINAPI Shim_GetClientRect(HWND, RECT* rect)
@@ -234,16 +290,119 @@ namespace
         }
     }
 
-    LONG WINAPI Shim_GetWindowLongA(HWND, int index) { return index == kGwlStyle ? g_style : 0; }
-
-    LONG WINAPI Shim_SetWindowLongA(HWND, int index, LONG value)
+    LONG_PTR WINAPI Shim_GetWindowLongPtr(HWND, int index)
     {
-        if (index != kGwlStyle)
-            return 0;
-        LONG old = g_style;
-        g_style = value;
+        std::lock_guard lock(g_lock);
+        if (index == kGwlStyle)
+            return g_style;
+        auto it = g_longs.find(index);
+        return it != g_longs.end() ? it->second : 0;
+    }
+
+    LONG_PTR WINAPI Shim_SetWindowLongPtr(HWND, int index, LONG_PTR value)
+    {
+        std::lock_guard lock(g_lock);
+        LONG_PTR old;
+        if (index == kGwlStyle)
+        {
+            old = g_style;
+            g_style = static_cast<LONG>(value);
+        }
+        else
+        {
+            old = g_longs[index];
+            g_longs[index] = value;
+        }
+        SetLastError(ERROR_SUCCESS); // 0 is a valid old value
         return old;
     }
+
+    LONG WINAPI Shim_GetWindowLong(HWND hwnd, int index) { return static_cast<LONG>(Shim_GetWindowLongPtr(hwnd, index)); }
+    LONG WINAPI Shim_SetWindowLong(HWND hwnd, int index, LONG value) { return static_cast<LONG>(Shim_SetWindowLongPtr(hwnd, index, value)); }
+
+    RECT ScreenRect() { return { 0, 0, static_cast<LONG>(Width()), static_cast<LONG>(Height()) }; }
+
+    // One monitor, the output.
+    HMONITOR WINAPI Shim_MonitorFromWindow(HWND, DWORD) { return kMonitor; }
+
+    BOOL WINAPI Shim_GetMonitorInfoW(HMONITOR, MonitorInfo* info)
+    {
+        if (!info || info->size < offsetof(MonitorInfo, device))
+            return FALSE;
+        info->monitor = info->work = ScreenRect();
+        info->flags = 1; // MONITORINFOF_PRIMARY
+        if (info->size >= sizeof(MonitorInfo))
+            wcscpy_s(info->device, L"\\\\.\\DISPLAY1");
+        return TRUE;
+    }
+
+    using MonitorEnumProc = BOOL(CALLBACK*)(HMONITOR, HDC, LPRECT, LPARAM);
+    BOOL WINAPI Shim_EnumDisplayMonitors(HDC, LPCRECT, MonitorEnumProc proc, LPARAM data)
+    {
+        RECT r = ScreenRect();
+        if (proc)
+            proc(kMonitor, nullptr, &r, data);
+        return TRUE;
+    }
+
+    // One display mode: the output's size, 32-bit, 60 Hz.
+    BOOL WINAPI Shim_EnumDisplaySettingsW(LPCWSTR, DWORD mode, DevMode* dm)
+    {
+        if (!dm || (mode != 0 && mode != 0xFFFFFFFF /* ENUM_CURRENT_SETTINGS */ && mode != 0xFFFFFFFE /* ENUM_REGISTRY_SETTINGS */))
+            return FALSE;
+        dm->fields = 0x00040000 | 0x00080000 | 0x00100000 | 0x00400000; // bits per pel, width, height, frequency
+        dm->bitsPerPel = 32;
+        dm->pelsWidth = Width();
+        dm->pelsHeight = Height();
+        dm->displayFrequency = 60;
+        return TRUE;
+    }
+
+    // Asking for the one mode there is succeeds; there is nothing to change.
+    LONG WINAPI Shim_ChangeDisplaySettingsW(DevMode*, DWORD) { return 0; } // DISP_CHANGE_SUCCESSFUL
+
+    BOOL WINAPI Shim_SetRect(RECT* r, int left, int top, int right, int bottom)
+    {
+        if (!r) return FALSE;
+        *r = { left, top, right, bottom };
+        return TRUE;
+    }
+    BOOL WINAPI Shim_SetRectEmpty(RECT* r) { return Shim_SetRect(r, 0, 0, 0, 0); }
+
+    // The whole window is always up for repainting.
+    BOOL WINAPI Shim_GetUpdateRect(HWND, RECT* r, BOOL)
+    {
+        if (r) *r = ScreenRect();
+        return TRUE;
+    }
+
+    HWND WINAPI Shim_GetDesktopWindow() { return kDesktop; }
+    HWND WINAPI Shim_SetCapture(HWND) { return nullptr; } // nobody had the mouse before
+    HKL WINAPI Shim_GetKeyboardLayout(DWORD) { return reinterpret_cast<HKL>(static_cast<uintptr_t>(0x04090409)); } // en-US
+
+    // Only the mapping games use to see whether a key types a character: letters, digits, space.
+    UINT WINAPI Shim_MapVirtualKeyW(UINT code, UINT type)
+    {
+        if (type != 2 /* MAPVK_VK_TO_CHAR */)
+            return 0;
+        if ((code >= '0' && code <= '9') || (code >= 'A' && code <= 'Z') || code == ' ')
+            return code;
+        return 0;
+    }
+
+    // There is no clipboard.
+    BOOL WINAPI Shim_OpenClipboard(HWND) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    BOOL WINAPI Shim_IsClipboardFormatAvailable(UINT) { return FALSE; }
+    HANDLE WINAPI Shim_GetClipboardData(UINT) { return nullptr; }
+
+    // Dialogs have nobody to answer them; the game sees one that couldn't be created.
+    INT_PTR WINAPI Shim_DialogBoxParamW(HINSTANCE, LPCWSTR, HWND, LPVOID, LPARAM)
+    {
+        HOST_LOG(L"DialogBoxParam: no dialogs on the console");
+        return -1;
+    }
+    HWND WINAPI Shim_GetDlgItem(HWND, int) { return nullptr; }
+    LRESULT WINAPI Shim_SendDlgItemMessageW(HWND, int, UINT, WPARAM, LPARAM) { return 0; }
 
     HWND WINAPI Shim_GetForegroundWindow() { return kHwnd; }
     HDC WINAPI Shim_GetDC(HWND) { return kDc; }
@@ -253,12 +412,19 @@ namespace
 
     // Non-null stand-ins for resources the game loads and never inspects.
     HANDLE WINAPI Shim_LoadCursorA(HINSTANCE, LPCSTR) { return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x00010030)); }
+    HANDLE WINAPI Shim_LoadIconW(HINSTANCE, LPCWSTR) { return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x00010070)); }
     HANDLE WINAPI Shim_LoadImageA(HINSTANCE, LPCSTR, UINT, int, int, UINT) { return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x00010040)); }
 
     // There is nobody to click OK, so say what the game wanted to show and press it for them.
     int WINAPI Shim_MessageBoxA(HWND, LPCSTR text, LPCSTR title, UINT)
     {
         HOST_LOG(L"MessageBox [%S]: %S", title ? title : "", text ? text : "");
+        return 1; // IDOK
+    }
+
+    int WINAPI Shim_MessageBoxW(HWND, LPCWSTR text, LPCWSTR title, UINT)
+    {
+        HOST_LOG(L"MessageBox [%s]: %s", title ? title : L"", text ? text : L"");
         return 1; // IDOK
     }
 }
@@ -319,6 +485,7 @@ void RegisterWindow(Win32Layer& layer)
     SHIM(RegisterClassExA);
     SHIM(RegisterClassExW);
     SHIM(RegisterClassA);
+    SHIM(RegisterClassW);
     SHIM(PeekMessageA);
     SHIM(PeekMessageW);
     SHIM(TranslateMessage);
@@ -332,8 +499,37 @@ void RegisterWindow(Win32Layer& layer)
     SHIM(ClientToScreen);
     SHIM(GetWindowPlacement);
     SHIM(GetSystemMetrics);
-    SHIM(GetWindowLongA);
-    SHIM(SetWindowLongA);
+    for (const char* name : { "GetWindowLongA", "GetWindowLongW" })
+        layer.Register((std::string("user32!") + name).c_str(), reinterpret_cast<void*>(&Shim_GetWindowLong));
+    for (const char* name : { "SetWindowLongA", "SetWindowLongW" })
+        layer.Register((std::string("user32!") + name).c_str(), reinterpret_cast<void*>(&Shim_SetWindowLong));
+    for (const char* name : { "GetWindowLongPtrA", "GetWindowLongPtrW" })
+        layer.Register((std::string("user32!") + name).c_str(), reinterpret_cast<void*>(&Shim_GetWindowLongPtr));
+    for (const char* name : { "SetWindowLongPtrA", "SetWindowLongPtrW" })
+        layer.Register((std::string("user32!") + name).c_str(), reinterpret_cast<void*>(&Shim_SetWindowLongPtr));
+    SHIM(MonitorFromWindow);
+    SHIM(GetMonitorInfoW);
+    SHIM(EnumDisplayMonitors);
+    SHIM(EnumDisplaySettingsW);
+    SHIM(ChangeDisplaySettingsW);
+    SHIM(SetRect);
+    SHIM(SetRectEmpty);
+    SHIM(GetUpdateRect);
+    SHIM(GetDesktopWindow);
+    SHIM(SetCapture);
+    SHIM(GetKeyboardLayout);
+    SHIM(MapVirtualKeyW);
+    SHIM(OpenClipboard);
+    SHIM(IsClipboardFormatAvailable);
+    SHIM(GetClipboardData);
+    SHIM(DialogBoxParamW);
+    SHIM(GetDlgItem);
+    SHIM(SendDlgItemMessageW);
+    SHIM(LoadIconW);
+    SHIM(MessageBoxW);
+    layer.Register("user32!LoadCursorW", reinterpret_cast<void*>(&Shim_LoadCursorA));
+    layer.Register("user32!GetWindowDC", reinterpret_cast<void*>(&Shim_GetDC));
+    layer.Register("user32!GetActiveWindow", reinterpret_cast<void*>(&Shim_GetForegroundWindow));
     SHIM(GetForegroundWindow);
     SHIM(GetDC);
     SHIM(ReleaseDC);
@@ -346,6 +542,7 @@ void RegisterWindow(Win32Layer& layer)
     layer.Register("user32!DefWindowProcA", reinterpret_cast<void*>(&Shim_DefWindowProc));
     layer.Register("user32!DefWindowProcW", reinterpret_cast<void*>(&Shim_DefWindowProc));
     for (const char* name : { "BringWindowToTop", "ClipCursor", "DestroyWindow", "SetForegroundWindow",
-        "SetWindowPos", "SetWindowTextA", "SetWindowTextW", "ValidateRect" })
+        "SetWindowPos", "SetWindowTextA", "SetWindowTextW", "ValidateRect", "ReleaseCapture", "TrackMouseEvent",
+        "CloseClipboard", "SetDlgItemTextW", "UpdateWindow", "InvalidateRect" })
         layer.Register((std::string("user32!") + name).c_str(), reinterpret_cast<void*>(&Shim_True));
 }
