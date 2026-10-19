@@ -160,6 +160,15 @@ namespace
         return 0;
     }
 
+    // No Uniscribe in the app partition. Its stubs used to "succeed" with the outputs left unset; a
+    // clean failure sends OpenTTD (and others) to their own layout and caret code instead.
+    HRESULT WINAPI Shim_UspFail() { return E_FAIL; }
+    HRESULT WINAPI Shim_ScriptFreeCache(void** cache)
+    {
+        if (cache) *cache = nullptr;
+        return S_OK;
+    }
+
     // The common dialogs aren't in the app partition. FALSE with no extended
     // error is what the game sees when the user cancels.
     BOOL WINAPI Shim_FileDialog(void*) { return FALSE; }
@@ -209,6 +218,10 @@ void RegisterFakes(Win32Layer& layer)
         "ImmNotifyIME", "ImmGetCompositionStringW", "ImmAssociateContext" })
         layer.Register((std::string("imm32!") + name).c_str(), reinterpret_cast<void*>(&Shim_ImmNone));
     layer.Register("imm32!ImmReleaseContext", reinterpret_cast<void*>(&Shim_ImmTrue));
+    for (const char* name : { "ScriptItemize", "ScriptLayout", "ScriptShape", "ScriptPlace", "ScriptGetLogicalWidths",
+        "ScriptBreak", "ScriptStringAnalyse", "ScriptTextOut" })
+        layer.Register((std::string("usp10!") + name).c_str(), reinterpret_cast<void*>(&Shim_UspFail));
+    layer.Register("usp10!ScriptFreeCache", reinterpret_cast<void*>(&Shim_ScriptFreeCache));
     for (const char* name : { "WinHttpOpen", "WinHttpConnect", "WinHttpOpenRequest", "WinHttpSendRequest",
         "WinHttpReceiveResponse", "WinHttpQueryDataAvailable", "WinHttpReadData", "WinHttpQueryHeaders",
         "WinHttpCrackUrl", "WinHttpSetStatusCallback", "WinHttpSetTimeouts", "WinHttpCloseHandle" })

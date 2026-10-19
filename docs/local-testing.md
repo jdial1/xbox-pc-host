@@ -60,8 +60,8 @@ Games that draw through GDI (OpenTTD, gdi-test, ClassiCube's launcher) can be wa
 
 - `--shot file.bmp` saves the last software frame when the run ends.
 - `--script file` runs timed steps, one per line, in seconds from the game's start:
-  `<s> move <x> <y>`, `<s> click [right]`, `<s> key <vk>` (decimal or `0x` hex), `<s> shot <file.bmp>`,
-  `<s> close`. `#` starts a comment.
+  `<s> move <x> <y>`, `<s> click [right]`, `<s> key <vk>` (decimal or `0x` hex), `<s> text <word>`
+  (types it, key down/char/key up per letter), `<s> shot <file.bmp>`, `<s> close`. `#` starts a comment.
 
 For example, this gets OpenTTD from its title screen into a new game at 1920x1080 (positions are
 window pixels; `host-args.txt` should pass `-r 1920x1080`):

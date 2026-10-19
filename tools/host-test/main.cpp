@@ -7,6 +7,7 @@
 //                        <s> move <x> <y>   pointer to a window position (WM_MOUSEMOVE)
 //                        <s> click [right]  press and release a button where the pointer is
 //                        <s> key <vk>       press and release a virtual key (decimal, or 0x hex)
+//                        <s> text <word>    type the word as WM_CHAR messages (no spaces)
 //                        <s> shot <file>    save the newest frame as a BMP
 //                        <s> close          send WM_CLOSE
 // Exit code: 0 ok, 1 usage or load failure, 2 expectation not met, 3 timeout.
@@ -108,6 +109,17 @@ namespace
             auto vk = static_cast<WPARAM>(wcstoul(step.a.c_str(), nullptr, 0));
             PostGameMessage(kWmKeyDown, vk, 1);
             PostGameMessage(kWmKeyUp, vk, 0xC0000001);
+        }
+        else if (step.action == L"text")
+        {
+            // Each character as a real keyboard delivers it: key down, the character, key up.
+            for (wchar_t c : step.a)
+            {
+                auto vk = static_cast<WPARAM>(std::iswalnum(c) ? std::towupper(c) : 0);
+                if (vk) PostGameMessage(kWmKeyDown, vk, 1);
+                PostGameMessage(0x0102 /* WM_CHAR */, c, 1);
+                if (vk) PostGameMessage(kWmKeyUp, vk, 0xC0000001);
+            }
         }
         else if (step.action == L"shot")
             SaveFrame(step.a);
