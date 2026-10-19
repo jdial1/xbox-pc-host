@@ -52,6 +52,36 @@ namespace
         return Shim_LoadLibraryA(Narrow(path ? path : L"").c_str());
     }
 
+    // Loading a DLL as data (for its resources) has nothing to give back.
+    constexpr DWORD kAsData = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE | LOAD_LIBRARY_AS_IMAGE_RESOURCE;
+
+    HMODULE WINAPI Shim_LoadLibraryExA(LPCSTR path, HANDLE, DWORD flags)
+    {
+        if (flags & kAsData)
+        {
+            SetLastError(ERROR_MOD_NOT_FOUND);
+            return nullptr;
+        }
+        return Shim_LoadLibraryA(path);
+    }
+
+    HMODULE WINAPI Shim_LoadLibraryExW(LPCWSTR path, HANDLE file, DWORD flags)
+    {
+        return Shim_LoadLibraryExA(Narrow(path ? path : L"").c_str(), file, flags);
+    }
+
+    BOOL WINAPI Shim_FreeLibrary(HMODULE module)
+    {
+        std::string dll;
+        return FakeName(module, dll) ? TRUE : FreeLibrary(module);
+    }
+
+    [[noreturn]] VOID WINAPI Shim_FreeLibraryAndExitThread(HMODULE module, DWORD code)
+    {
+        Shim_FreeLibrary(module);
+        ExitThread(code);
+    }
+
     FARPROC WINAPI Shim_GetProcAddress(HMODULE module, LPCSTR name)
     {
         std::string dll;
@@ -65,7 +95,14 @@ namespace
             HOST_LOG(L"GetProcAddress %S!#%u", dll.c_str(), ordinal);
         else
             HOST_LOG(L"GetProcAddress %S!%S", dll.c_str(), name);
-        return reinterpret_cast<FARPROC>(g_layer->ResolveImport(dll.c_str(), byOrdinal ? nullptr : name, ordinal));
+        // Run-time lookups probe for optional functions, so a missing one is null, as on Windows, not a stub.
+        void* fn = g_layer->Find(dll.c_str(), byOrdinal ? nullptr : name, ordinal);
+        if (!fn)
+        {
+            HOST_LOG(L"  -> not available");
+            SetLastError(ERROR_PROC_NOT_FOUND);
+        }
+        return reinterpret_cast<FARPROC>(fn);
     }
 }
 
@@ -86,4 +123,8 @@ void RegisterLoader(Win32Layer& layer)
     layer.Register("kernel32!LoadLibraryA", reinterpret_cast<void*>(&Shim_LoadLibraryA));
     layer.Register("kernel32!LoadLibraryW", reinterpret_cast<void*>(&Shim_LoadLibraryW));
     layer.Register("kernel32!GetProcAddress", reinterpret_cast<void*>(&Shim_GetProcAddress));
+    layer.Register("kernel32!LoadLibraryExA", reinterpret_cast<void*>(&Shim_LoadLibraryExA));
+    layer.Register("kernel32!LoadLibraryExW", reinterpret_cast<void*>(&Shim_LoadLibraryExW));
+    layer.Register("kernel32!FreeLibrary", reinterpret_cast<void*>(&Shim_FreeLibrary));
+    layer.Register("kernel32!FreeLibraryAndExitThread", reinterpret_cast<void*>(&Shim_FreeLibraryAndExitThread));
 }

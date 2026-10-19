@@ -186,6 +186,155 @@ namespace
         return static_cast<DWORD>(cwd.size());
     }
 
+    DWORD WINAPI Shim_GetCurrentDirectoryW(DWORD size, LPWSTR buffer)
+    {
+        std::wstring cwd;
+        {
+            std::lock_guard lock(g_lock);
+            cwd = g_cwd.wstring();
+        }
+        if (cwd.size() + 1 > size)
+            return static_cast<DWORD>(cwd.size() + 1);
+        memcpy(buffer, cwd.c_str(), (cwd.size() + 1) * sizeof(wchar_t));
+        return static_cast<DWORD>(cwd.size());
+    }
+
+    // The path the game would see, made absolute against its current directory. Not mapped:
+    // a path outside the game folder comes back as the game wrote it, as on Windows.
+    DWORD WINAPI Shim_GetFullPathNameW(LPCWSTR name, DWORD size, LPWSTR buffer, LPWSTR* filePart)
+    {
+        if (!name || !*name)
+        {
+            SetLastError(ERROR_INVALID_NAME);
+            return 0;
+        }
+        std::wstring s = name;
+        std::replace(s.begin(), s.end(), L'/', L'\\');
+        fs::path p(s);
+        if (!(p.has_root_name() && p.has_root_directory()))
+        {
+            std::lock_guard lock(g_lock);
+            p = p.has_root_directory() ? g_cwd.root_name() / p : g_cwd / p;
+        }
+        std::wstring full = p.lexically_normal().wstring();
+        if (full.size() + 1 > size)
+            return static_cast<DWORD>(full.size() + 1);
+        memcpy(buffer, full.c_str(), (full.size() + 1) * sizeof(wchar_t));
+        if (filePart)
+        {
+            size_t slash = full.find_last_of(L'\\');
+            *filePart = slash == std::wstring::npos || slash + 1 == full.size() ? nullptr : buffer + slash + 1;
+        }
+        return static_cast<DWORD>(full.size());
+    }
+
+    BOOL WINAPI Shim_GetFileAttributesExW(LPCWSTR name, GET_FILEEX_INFO_LEVELS level, LPVOID data)
+    {
+        return GetFileAttributesExFromAppW(MapGamePath(name).c_str(), level, data);
+    }
+
+    HANDLE WINAPI Shim_FindFirstFileExW(LPCWSTR name, FINDEX_INFO_LEVELS level, LPVOID data, FINDEX_SEARCH_OPS op,
+        LPVOID filter, DWORD flags)
+    {
+        return FindFirstFileExFromAppW(MapGamePath(name).c_str(), level, data, op, filter, flags);
+    }
+
+    BOOL WINAPI Shim_CreateDirectoryExW(LPCWSTR, LPCWSTR name, LPSECURITY_ATTRIBUTES security)
+    {
+        return Shim_CreateDirectoryW(name, security);
+    }
+
+    BOOL WINAPI Shim_CopyFileW(LPCWSTR from, LPCWSTR to, BOOL failIfExists)
+    {
+        return CopyFileFromAppW(MapGamePath(from).c_str(), MapGamePath(to).c_str(), failIfExists);
+    }
+
+    BOOL WINAPI Shim_SetFileAttributesW(LPCWSTR name, DWORD attributes)
+    {
+        return SetFileAttributesFromAppW(MapGamePath(name).c_str(), attributes);
+    }
+
+    // Free space of the drive the game folder is on, whatever path was asked about.
+    BOOL WINAPI Shim_GetDiskFreeSpaceExW(LPCWSTR, PULARGE_INTEGER available, PULARGE_INTEGER total, PULARGE_INTEGER free)
+    {
+        fs::path root;
+        {
+            std::lock_guard lock(g_lock);
+            root = g_root;
+        }
+        return GetDiskFreeSpaceExW(root.c_str(), available, total, free);
+    }
+
+    // A temp folder inside the game folder, made on first use.
+    DWORD WINAPI Shim_GetTempPathW(DWORD size, LPWSTR buffer)
+    {
+        fs::path temp;
+        {
+            std::lock_guard lock(g_lock);
+            temp = g_root / L"_temp";
+        }
+        CreateDirectoryFromAppW(temp.c_str(), nullptr);
+        std::wstring s = temp.wstring() + L"\\";
+        if (s.size() + 1 > size)
+            return static_cast<DWORD>(s.size() + 1);
+        memcpy(buffer, s.c_str(), (s.size() + 1) * sizeof(wchar_t));
+        return static_cast<DWORD>(s.size());
+    }
+
+    DWORD WINAPI Shim_GetLogicalDriveStringsW(DWORD size, LPWSTR buffer)
+    {
+        static const wchar_t drives[] = L"C:\\\0"; // "C:\" then the list's final terminator
+        constexpr DWORD length = static_cast<DWORD>(_countof(drives) - 1);
+        if (size < length + 1)
+            return length + 1;
+        memcpy(buffer, drives, sizeof(drives));
+        return length;
+    }
+
+    BOOL WINAPI Shim_CreateLinkW(LPCWSTR, LPCWSTR, LPVOID)
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+
+    // Shell folders live in <game>\_user, made on request (CSIDL_FLAG_CREATE) or on first use.
+    HRESULT WINAPI Shim_SHGetFolderPathW(HWND, int csidl, HANDLE, DWORD, LPWSTR path)
+    {
+        const wchar_t* sub = nullptr;
+        switch (csidl & 0xFF)
+        {
+        case 0x05: case 0x2E: sub = L"Documents"; break;             // CSIDL_PERSONAL, CSIDL_COMMON_DOCUMENTS
+        case 0x1A: case 0x23: sub = L"AppData\\Roaming"; break;      // CSIDL_APPDATA, CSIDL_COMMON_APPDATA
+        case 0x1C: sub = L"AppData\\Local"; break;                   // CSIDL_LOCAL_APPDATA
+        case 0x10: sub = L"Desktop"; break;                          // CSIDL_DESKTOPDIRECTORY
+        case 0x14: sub = L"Fonts"; break;                            // CSIDL_FONTS
+        case 0x28: sub = L""; break;                                 // CSIDL_PROFILE
+        default: return E_INVALIDARG;
+        }
+        fs::path dir;
+        {
+            std::lock_guard lock(g_lock);
+            dir = (g_root / L"_user" / sub).lexically_normal();
+        }
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        std::wstring s = dir.wstring();
+        if (!s.empty() && s.back() == L'\\') s.pop_back();
+        if (s.size() >= MAX_PATH)
+            return E_FAIL;
+        wcscpy_s(path, MAX_PATH, s.c_str());
+        return S_OK;
+    }
+
+    HRESULT WINAPI Shim_SHGetFolderPathA(HWND window, int csidl, HANDLE token, DWORD flags, LPSTR path)
+    {
+        wchar_t wide[MAX_PATH];
+        HRESULT hr = Shim_SHGetFolderPathW(window, csidl, token, flags, wide);
+        if (SUCCEEDED(hr))
+            strcpy_s(path, MAX_PATH, Narrow(wide).c_str());
+        return hr;
+    }
+
     BOOL WINAPI Shim_SetCurrentDirectoryW(LPCWSTR name)
     {
         fs::path real = MapGamePath(name);
@@ -218,7 +367,21 @@ void RegisterFiles(Win32Layer& layer)
     SHIM(GetFileAttributesW);
     SHIM(GetCurrentDirectoryA);
     SHIM(SetCurrentDirectoryW);
+    SHIM(GetCurrentDirectoryW);
+    SHIM(GetFullPathNameW);
+    SHIM(GetFileAttributesExW);
+    SHIM(FindFirstFileExW);
+    SHIM(CreateDirectoryExW);
+    SHIM(CopyFileW);
+    SHIM(SetFileAttributesW);
+    SHIM(GetDiskFreeSpaceExW);
+    SHIM(GetTempPathW);
+    SHIM(GetLogicalDriveStringsW);
 #undef SHIM
+    layer.Register("kernel32!CreateHardLinkW", reinterpret_cast<void*>(&Shim_CreateLinkW));
+    layer.Register("kernel32!CreateSymbolicLinkW", reinterpret_cast<void*>(&Shim_CreateLinkW));
+    layer.Register("shell32!SHGetFolderPathW", reinterpret_cast<void*>(&Shim_SHGetFolderPathW));
+    layer.Register("shell32!SHGetFolderPathA", reinterpret_cast<void*>(&Shim_SHGetFolderPathA));
     // Handles from FindFirstFileExFromApp work with the real FindNextFileW.
     layer.Register("kernel32!FindNextFileW", reinterpret_cast<void*>(&FindNextFileW));
 }

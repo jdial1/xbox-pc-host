@@ -193,6 +193,8 @@ namespace
             m_win32.LogUnresolved();
             if (!image->EntryPoint() || image->IsDll())
                 return Fail(L"not an exe with an entry point");
+            if (!InstallGameTls(*image, error))
+                return Fail(error);
             m_image = std::move(image);
 
             SetState(RunState::Running);
@@ -272,6 +274,7 @@ namespace
 
             DWORD exitCode = 0;
             EXCEPTION_RECORD crash{};
+            EnterGameThread(DLL_PROCESS_ATTACH);
             bool returned = CallEntry(m_image->EntryPoint(), exitCode, crash);
 
             if (m_screen) m_screen->GameEnded();

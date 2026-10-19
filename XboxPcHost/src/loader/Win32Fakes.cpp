@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "loader/Win32Layer.h"
+#include "Log.h"
 
 // Calls with no real answer on the console. They report what a normal Windows
 // 10 desktop would, or fail the way a locked-down one would. Global* and
@@ -79,6 +80,75 @@ namespace
         return reinterpret_cast<HINSTANCE>(static_cast<INT_PTR>(5)); // SE_ERR_ACCESSDENIED
     }
 
+    // There is no console. Output goes to host.log; input never arrives.
+    BOOL WINAPI Shim_AllocConsole() { return Denied(); }
+    BOOL WINAPI Shim_FreeConsole() { return TRUE; }
+    BOOL WINAPI Shim_GetConsoleMode(HANDLE, LPDWORD) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    UINT WINAPI Shim_GetConsoleOutputCP() { return CP_UTF8; }
+    BOOL WINAPI Shim_ConsoleFails(HANDLE, LPVOID) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    BOOL WINAPI Shim_ConsoleSetter(HANDLE, ULONG_PTR) { return TRUE; }
+    BOOL WINAPI Shim_SetConsoleTitleW(LPCWSTR) { return TRUE; }
+    BOOL WINAPI Shim_SetConsoleCtrlHandler(LPVOID, BOOL) { return TRUE; }
+    BOOL WINAPI Shim_ReadConsoleW(HANDLE, LPVOID, DWORD, LPDWORD read, LPVOID)
+    {
+        if (read) *read = 0;
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+    BOOL WINAPI Shim_WriteConsoleW(HANDLE, const VOID* text, DWORD length, LPDWORD written, LPVOID)
+    {
+        HOST_LOG(L"console: %.*s", static_cast<int>(length), static_cast<const wchar_t*>(text));
+        if (written) *written = length;
+        return TRUE;
+    }
+
+    UINT WINAPI Shim_SetErrorMode(UINT) { return 0; }
+    BOOL WINAPI Shim_AreFileApisANSI() { return TRUE; }
+    UINT WINAPI Shim_GetOEMCP() { return 437; }
+
+    // Crash handlers the game installs are recorded nowhere; the host's SEH handler reports crashes.
+    PVOID WINAPI Shim_AddVectoredExceptionHandler(ULONG, PVECTORED_EXCEPTION_HANDLER handler)
+    {
+        return reinterpret_cast<PVOID>(handler); // non-null so the game believes it worked
+    }
+    LONG WINAPI Shim_UnhandledExceptionFilter(EXCEPTION_POINTERS*) { return EXCEPTION_CONTINUE_SEARCH; }
+
+    // The same Windows 10 GetVersionExA reports.
+    ULONGLONG WINAPI Shim_VerSetConditionMask(ULONGLONG mask, DWORD typeMask, BYTE condition)
+    {
+        for (int bit = 0; bit < 8; ++bit)
+            if (typeMask & (1u << bit))
+                mask |= static_cast<ULONGLONG>(condition & 7) << (bit * 3);
+        return mask;
+    }
+    BOOL WINAPI Shim_VerifyVersionInfoW(LPOSVERSIONINFOEXW info, DWORD typeMask, DWORDLONG)
+    {
+        // Games ask "at least version X"; only a build newer than ours fails.
+        if ((typeMask & VER_BUILDNUMBER) && info->dwBuildNumber > 19045)
+        {
+            SetLastError(ERROR_OLD_WIN_VERSION);
+            return FALSE;
+        }
+        return TRUE;
+    }
+
+    BOOL WINAPI Shim_TerminateThread(HANDLE, DWORD) { return Denied(); }
+
+    // The game's CRT asks what kind of app it is. The real answers describe the host (a UWP app), which
+    // would have it initialize WinRT on every thread; a plain desktop process is what it was built for.
+    LONG WINAPI Shim_AppPolicyZero(HANDLE, int* policy) { *policy = 0; return ERROR_SUCCESS; }
+
+    // The host doesn't change the system timer; Sleep is fine-grained enough on the console.
+    UINT WINAPI Shim_TimePeriod(UINT) { return 0; } // TIMERR_NOERROR
+
+    SIZE_T WINAPI Shim_VirtualQueryEx(HANDLE process, LPCVOID address, PMEMORY_BASIC_INFORMATION info, SIZE_T size)
+    {
+        if (process == GetCurrentProcess())
+            return VirtualQuery(address, info, size);
+        Denied();
+        return 0;
+    }
+
     // The common dialogs aren't in the app partition. FALSE with no extended
     // error is what the game sees when the user cancels.
     BOOL WINAPI Shim_FileDialog(void*) { return FALSE; }
@@ -103,5 +173,31 @@ void RegisterFakes(Win32Layer& layer)
     FAKE("comdlg32", GetSaveFileNameA, Shim_FileDialog);
     FAKE("comdlg32", GetSaveFileNameW, Shim_FileDialog);
     FAKE("comdlg32", CommDlgExtendedError, Shim_CommDlgExtendedError);
+    FAKE("kernel32", AllocConsole, Shim_AllocConsole);
+    FAKE("kernel32", FreeConsole, Shim_FreeConsole);
+    FAKE("kernel32", GetConsoleMode, Shim_GetConsoleMode);
+    FAKE("kernel32", GetConsoleOutputCP, Shim_GetConsoleOutputCP);
+    FAKE("kernel32", GetConsoleScreenBufferInfo, Shim_ConsoleFails);
+    FAKE("kernel32", SetConsoleOutputCP, Shim_ConsoleSetter);
+    FAKE("kernel32", SetConsoleScreenBufferSize, Shim_ConsoleSetter);
+    FAKE("kernel32", SetConsoleTitleW, Shim_SetConsoleTitleW);
+    FAKE("kernel32", SetConsoleCtrlHandler, Shim_SetConsoleCtrlHandler);
+    FAKE("kernel32", ReadConsoleW, Shim_ReadConsoleW);
+    FAKE("kernel32", WriteConsoleW, Shim_WriteConsoleW);
+    FAKE("kernel32", SetErrorMode, Shim_SetErrorMode);
+    FAKE("kernel32", AreFileApisANSI, Shim_AreFileApisANSI);
+    FAKE("kernel32", GetOEMCP, Shim_GetOEMCP);
+    FAKE("kernel32", AddVectoredExceptionHandler, Shim_AddVectoredExceptionHandler);
+    FAKE("kernel32", UnhandledExceptionFilter, Shim_UnhandledExceptionFilter);
+    FAKE("kernel32", VerSetConditionMask, Shim_VerSetConditionMask);
+    FAKE("kernel32", VerifyVersionInfoW, Shim_VerifyVersionInfoW);
+    FAKE("kernel32", TerminateThread, Shim_TerminateThread);
+    FAKE("kernel32", VirtualQueryEx, Shim_VirtualQueryEx);
+    FAKE("winmm", timeBeginPeriod, Shim_TimePeriod);
+    FAKE("kernel32", AppPolicyGetProcessTerminationMethod, Shim_AppPolicyZero); // ExitProcess
+    FAKE("kernel32", AppPolicyGetThreadInitializationType, Shim_AppPolicyZero); // none
+    FAKE("kernel32", AppPolicyGetShowDeveloperDiagnostic, Shim_AppPolicyZero);  // none
+    FAKE("kernel32", AppPolicyGetWindowingModel, Shim_AppPolicyZero);           // none
+    FAKE("winmm", timeEndPeriod, Shim_TimePeriod);
 #undef FAKE
 }

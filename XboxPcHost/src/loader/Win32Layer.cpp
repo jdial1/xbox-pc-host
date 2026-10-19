@@ -26,6 +26,7 @@ Win32Layer::Win32Layer()
     RegisterAudio(*this);
     RegisterGdi(*this);
     RegisterNet(*this);
+    RegisterLocale(*this);
 }
 
 void Win32Layer::Register(const char* key, void* fn)
@@ -52,6 +53,16 @@ void* Win32Layer::ResolveImport(const char* dll, const char* name, uint16_t ordi
         m_unresolved.push_back(key);
     }
     return fb->second;
+}
+
+void* Win32Layer::Find(const char* dll, const char* name, uint16_t ordinal) const
+{
+    std::string key = NormalizeDllName(dll);
+    key += '!';
+    key += name ? std::string(name) : "#" + std::to_string(ordinal);
+    std::lock_guard lock(m_lock);
+    auto it = m_table.find(key);
+    return it != m_table.end() ? it->second : nullptr;
 }
 
 void Win32Layer::LogUnresolved() const

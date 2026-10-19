@@ -13,6 +13,8 @@ public:
 
     // Logs every import that fell back to a stub; call after PeImage::Load.
     void LogUnresolved() const;
+    // A registered function, or null; unlike ResolveImport this never makes a stub (for GetProcAddress).
+    void* Find(const char* dll, const char* name, uint16_t ordinal) const;
 
     // key is "dll!Name" with the dll already normalized (lowercase, no .dll).
     void Register(const char* key, void* fn);
@@ -37,6 +39,7 @@ void RegisterInput(Win32Layer& layer);
 void RegisterAudio(Win32Layer& layer);
 void RegisterGdi(Win32Layer& layer);
 void RegisterNet(Win32Layer& layer);
+void RegisterLocale(Win32Layer& layer);
 class GameDisplay;
 void SetGameDisplayForD3D(GameDisplay* display);
 void SetGameDisplayForGdi(GameDisplay* display);
@@ -77,6 +80,13 @@ HDC GameWindowDc(); // what the game's GetDC(hwnd) returns
 
 // The XAudio2 engine winmm's waveOut plays through; null means no audio device.
 void SetGameAudio(IXAudio2* engine);
+
+// Static TLS for the game's exe (Win32Tls.cpp). Install once after loading, on any thread;
+// every thread that runs game code calls EnterGameThread first (DLL_PROCESS_ATTACH on the
+// game's main thread, DLL_THREAD_ATTACH on the others) and LeaveGameThread when it's done.
+bool InstallGameTls(PeImage const& image, std::wstring& error);
+void EnterGameThread(DWORD reason);
+void LeaveGameThread();
 
 // How many threads the game started are still running, after waiting up to waitMs for each.
 // Their code lives in the game's image, so the image can't be unmapped while any run.

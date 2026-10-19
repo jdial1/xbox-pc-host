@@ -38,6 +38,16 @@ public:
     // TLS callbacks to run on thread attach/detach, in order.
     std::vector<PIMAGE_TLS_CALLBACK> const& TlsCallbacks() const { return m_tlsCallbacks; }
 
+    // The static TLS template (__declspec(thread) data). index is null when the image has no TLS directory.
+    struct TlsTemplate
+    {
+        const uint8_t* data = nullptr;
+        size_t rawSize = 0;
+        size_t totalSize = 0; // rawSize plus zero fill
+        uint32_t* index = nullptr; // the image's _tls_index, which the host fills in
+    };
+    TlsTemplate const& Tls() const { return m_tls; }
+
 private:
     bool ApplyRelocations(intptr_t delta, std::wstring& error);
     bool BindImports(ImportResolver& resolver, std::wstring& error);
@@ -55,4 +65,5 @@ private:
     bool m_relocated = false;
     PRUNTIME_FUNCTION m_functionTable = nullptr;
     std::vector<PIMAGE_TLS_CALLBACK> m_tlsCallbacks;
+    TlsTemplate m_tls;
 };

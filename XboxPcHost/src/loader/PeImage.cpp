@@ -189,9 +189,11 @@ void PeImage::ReadTls()
     if (tls->AddressOfCallBacks)
         for (auto cb = reinterpret_cast<PIMAGE_TLS_CALLBACK*>(tls->AddressOfCallBacks); *cb; ++cb)
             m_tlsCallbacks.push_back(*cb);
-    if (tls->EndAddressOfRawData > tls->StartAddressOfRawData || tls->SizeOfZeroFill)
-        HOST_LOG(L"  %s uses static TLS (__declspec(thread)); not supported yet, expect a crash if it's touched",
-            m_path.filename().c_str());
+    m_tls.data = reinterpret_cast<const uint8_t*>(tls->StartAddressOfRawData);
+    m_tls.rawSize = tls->EndAddressOfRawData > tls->StartAddressOfRawData
+        ? static_cast<size_t>(tls->EndAddressOfRawData - tls->StartAddressOfRawData) : 0;
+    m_tls.totalSize = m_tls.rawSize + tls->SizeOfZeroFill;
+    m_tls.index = reinterpret_cast<uint32_t*>(tls->AddressOfIndex);
 }
 
 bool PeImage::ProtectSections(std::wstring& error)
