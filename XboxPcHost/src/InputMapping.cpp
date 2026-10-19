@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "InputMapping.h"
+#include <fstream>
 
 using winrt::Windows::Gaming::Input::GamepadButtons;
 
@@ -22,9 +23,43 @@ namespace
 
     // Squaring the stick value makes small movements fine and big ones fast.
     float Curve(float v) { return v * std::abs(v); }
+
+    // Mouse-driven games: the pointer is the main control, so both sticks move it.
+    constexpr ButtonKey kPointerKeys[] = {
+        { GamepadButtons::DPadUp, VK_UP },
+        { GamepadButtons::DPadDown, VK_DOWN },
+        { GamepadButtons::DPadLeft, VK_LEFT },
+        { GamepadButtons::DPadRight, VK_RIGHT },
+        { GamepadButtons::Menu, VK_ESCAPE },
+    };
+
+    void MapPointer(PadState const& pad, float seconds, GameInputFrame& frame)
+    {
+        // Stick up moves the cursor up, which is -Y on screen.
+        frame.cursorDx += (Curve(pad.leftX) + Curve(pad.rightX)) * kCursorSpeed * seconds;
+        frame.cursorDy -= (Curve(pad.leftY) + Curve(pad.rightY)) * kCursorSpeed * seconds;
+
+        if (pad.Down(GamepadButtons::A) || pad.rightTrigger > kTriggerThreshold) frame.mouseButtons[0] = true;
+        if (pad.Down(GamepadButtons::B) || pad.leftTrigger > kTriggerThreshold) frame.mouseButtons[1] = true;
+        for (auto const& map : kPointerKeys)
+            if (pad.Down(map.button))
+                frame.keys[map.key] = true;
+
+        if (pad.Pressed(GamepadButtons::LeftShoulder)) frame.wheel += 1;
+        if (pad.Pressed(GamepadButtons::RightShoulder)) frame.wheel -= 1;
+    }
 }
 
-GameInputFrame MapInput(KeyboardMouseState const& kbm, PadState const& pad, float seconds)
+InputProfile ReadInputProfile(std::filesystem::path const& gameFolder)
+{
+    std::ifstream file(gameFolder / L"host-input.txt");
+    std::string word;
+    file >> word;
+    std::transform(word.begin(), word.end(), word.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return word == "pointer" ? InputProfile::Pointer : InputProfile::Default;
+}
+
+GameInputFrame MapInput(KeyboardMouseState const& kbm, PadState const& pad, float seconds, InputProfile profile)
 {
     GameInputFrame frame;
     frame.keys = kbm.keys;
@@ -34,6 +69,11 @@ GameInputFrame MapInput(KeyboardMouseState const& kbm, PadState const& pad, floa
     frame.wheel = kbm.wheel;
     if (!pad.connected)
         return frame;
+    if (profile == InputProfile::Pointer)
+    {
+        MapPointer(pad, seconds, frame);
+        return frame;
+    }
 
     // Left stick is WASD (stick up is +Y).
     if (pad.leftY > kStickThreshold) frame.keys['W'] = true;

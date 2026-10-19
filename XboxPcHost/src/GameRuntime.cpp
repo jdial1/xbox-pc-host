@@ -185,6 +185,9 @@ namespace
             fs::path exe;
             if (!PrepareFolder(game, host, exe))
                 return Fail(L"can't copy the game to LocalState");
+            m_profile = ReadInputProfile(exe.parent_path());
+            if (m_profile == InputProfile::Pointer)
+                HOST_LOG(L"controller: pointer profile (sticks move the pointer, A/B click)");
 
             auto image = std::make_unique<PeImage>();
             std::wstring error;
@@ -216,7 +219,7 @@ namespace
             auto now = std::chrono::steady_clock::now();
             float seconds = std::min(0.1f, std::chrono::duration<float>(now - m_lastTick).count());
             m_lastTick = now;
-            FeedGameInput(MapInput(m_input->KeyboardMouse(), m_input->Pad(), seconds));
+            FeedGameInput(MapInput(m_input->KeyboardMouse(), m_input->Pad(), seconds, m_profile));
         }
         void Stop() override { DetachGameWindow(); }
         bool IsRunning() const override { return State() == RunState::Running; }
@@ -333,6 +336,7 @@ namespace
 
         std::unique_ptr<GraphicsDisplay> m_screen;
         Input* m_input = nullptr;
+        InputProfile m_profile = InputProfile::Default;
         std::chrono::steady_clock::time_point m_lastTick;
         Win32Layer m_win32;
         std::unique_ptr<PeImage> m_image;
