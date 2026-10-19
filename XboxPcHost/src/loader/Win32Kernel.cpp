@@ -167,6 +167,13 @@ namespace
         ExitThread(code);
     }
 
+    HRESULT WINAPI Shim_GetErrorInfo(ULONG, IUnknown** info)
+    {
+        if (info) *info = nullptr;
+        return S_FALSE;
+    }
+    HRESULT WINAPI Shim_SetErrorInfo(ULONG, IUnknown*) { return S_OK; }
+
     // The game's "process" is itself; anything else is out of reach.
     BOOL WINAPI Shim_TerminateProcess(HANDLE process, UINT code)
     {
@@ -392,6 +399,14 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", IsValidLocaleName);
     PASS("kernel32", LCIDToLocaleName);
     PASS("kernel32", LocaleNameToLCID);
+
+    // COM error info (OpenTTD imports these from oleaut32 by ordinal: 200 and 201). They aren't in
+    // the app partition, and a stub GetErrorInfo would "succeed" leaving its out pointer for the
+    // caller to release; there is never any error info here.
+    for (const char* key : { "oleaut32!GetErrorInfo", "oleaut32!#200" })
+        layer.Register(key, reinterpret_cast<void*>(&Shim_GetErrorInfo));
+    for (const char* key : { "oleaut32!SetErrorInfo", "oleaut32!#201" })
+        layer.Register(key, reinterpret_cast<void*>(&Shim_SetErrorInfo));
 
     // The host CRT stands in for msvcrt.
     PASS("msvcrt", memcpy);
