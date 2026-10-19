@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include "GameLibrary.h"
 
 class Graphics;
@@ -30,3 +32,8 @@ public:
 };
 
 std::unique_ptr<IGameRuntime> CreateGameRuntime();
+
+// For test harnesses: sees every software (GDI) frame the game presents, on the game's thread.
+// Set it before Start(); the app never sets one.
+using GameFrameTap = std::function<void(const uint32_t* bgra, UINT width, UINT height, UINT pitchBytes)>;
+void SetGameFrameTap(GameFrameTap tap);

@@ -12,6 +12,13 @@ namespace fs = std::filesystem;
 
 namespace
 {
+    GameFrameTap g_frameTap; // test harnesses only
+}
+
+void SetGameFrameTap(GameFrameTap tap) { g_frameTap = std::move(tap); }
+
+namespace
+{
     // Runs the entry point; SEH can't share a function with C++ unwinding.
     bool CallEntry(void* entry, DWORD& exitCode, EXCEPTION_RECORD& crash)
     {
@@ -56,6 +63,8 @@ namespace
 
         void PresentPixels(const uint32_t* bgra, UINT width, UINT height, UINT pitchBytes) override
         {
+            if (g_frameTap)
+                g_frameTap(bgra, width, height, pitchBytes);
             // Only the newest frame matters; the UI thread draws it on its next pass. The alpha
             // channel is forced opaque because GDI bitmaps leave it zero.
             std::vector<uint32_t> copy(static_cast<size_t>(width) * height);

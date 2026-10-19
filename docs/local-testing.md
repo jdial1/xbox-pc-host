@@ -53,8 +53,30 @@ load failure or an unexpected end, 2 means `--expect` wasn't found, 3 is a timeo
 
 What it proves: mapping, relocations, import binding, the unresolved list, the game thread, SEH crash
 reporting, and the process shims. What it can't: app container rules (VirtualProtectFromApp limits,
-the `codeGeneration` capability, blocked APIs) and anything graphical. Those need the console, or
+the `codeGeneration` capability, blocked APIs) and Direct3D output. Those need the console, or
 the MSIX installed on a Windows 10/11 client PC.
+
+Games that draw through GDI (OpenTTD, gdi-test, ClassiCube's launcher) can be watched and driven:
+
+- `--shot file.bmp` saves the last software frame when the run ends.
+- `--script file` runs timed steps, one per line, in seconds from the game's start:
+  `<s> move <x> <y>`, `<s> click [right]`, `<s> key <vk>` (decimal or `0x` hex), `<s> shot <file.bmp>`,
+  `<s> close`. `#` starts a comment.
+
+For example, this gets OpenTTD from its title screen into a new game at 1920x1080 (positions are
+window pixels; `host-args.txt` should pass `-r 1920x1080`):
+
+```
+8.5  move 663 484     # close the "fallback sound set" message
+9    click
+10.5 move 813 618     # "No" to the survey
+11   click
+12.5 move 958 267     # New Game
+13   click
+15.5 move 958 800     # Generate
+16   click
+25   shot ingame.bmp
+```
 
 ## What the harness shows for ClassiCube
 
