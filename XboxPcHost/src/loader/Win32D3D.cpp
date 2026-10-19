@@ -17,6 +17,7 @@ namespace
     // IUnknown 0-2, IDXGIObject 3-6, IDXGIFactory 7-11, so these are the slots we replace.
     constexpr size_t kMakeWindowAssociation = 8, kCreateSwapChain = 10;
     constexpr size_t kPresent = 8; // IDXGIDeviceSubObject ends at 7, then IDXGISwapChain starts with Present
+    constexpr size_t kResizeBuffers = 13; // after GetBuffer, Set/GetFullscreenState and GetDesc
 
     // Big enough for IDXGIFactory7 and IDXGISwapChain4. Older, shorter tables just copy a few
     // harmless extra pointers from the read-only data that follows.
@@ -30,6 +31,8 @@ namespace
     using CreateSwapChainFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
     using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
     PresentFn g_originalPresent = nullptr;
+    using ResizeBuffersFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+    ResizeBuffersFn g_originalResizeBuffers = nullptr;
 
     // Points the object at a copy of its vtable with the given slots replaced.
     // Returns the original table, whether or not the object was patched already.
@@ -72,6 +75,17 @@ namespace
         return g_originalPresent(self, syncInterval, flags);
     }
 
+    // Width or height 0 means "the window's size", which DXGI can't read from a CoreWindow off its
+    // UI thread and turns into 8x8; hand it the display size instead.
+    HRESULT STDMETHODCALLTYPE Hook_ResizeBuffers(IDXGISwapChain* self, UINT count, UINT width, UINT height, DXGI_FORMAT format, UINT flags)
+    {
+        UINT w = width ? width : (g_display ? g_display->Width() : 0);
+        UINT h = height ? height : (g_display ? g_display->Height() : 0);
+        HRESULT hr = g_originalResizeBuffers(self, count, w, h, FlipFormat(format), flags);
+        HOST_LOG(L"game ResizeBuffers %ux%u -> %ux%u: 0x%08x", width, height, w, h, static_cast<unsigned>(hr));
+        return hr;
+    }
+
     // The game has no HWND association to make.
     HRESULT STDMETHODCALLTYPE Hook_MakeWindowAssociation(IDXGIFactory*, HWND, UINT) { return S_OK; }
 
@@ -108,8 +122,11 @@ namespace
         if (FAILED(hr))
             return hr;
 
-        void** original = Patch(swapChain, kSwapChainSlots, { { kPresent, reinterpret_cast<void*>(&Hook_Present) } });
+        void** original = Patch(swapChain, kSwapChainSlots, {
+            { kPresent, reinterpret_cast<void*>(&Hook_Present) },
+            { kResizeBuffers, reinterpret_cast<void*>(&Hook_ResizeBuffers) } });
         g_originalPresent = reinterpret_cast<PresentFn>(original[kPresent]);
+        g_originalResizeBuffers = reinterpret_cast<ResizeBuffersFn>(original[kResizeBuffers]);
         *out = swapChain;
         return S_OK;
     }
