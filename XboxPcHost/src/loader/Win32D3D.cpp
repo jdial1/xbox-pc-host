@@ -35,6 +35,8 @@ namespace
     std::mutex g_lock;
     std::map<void**, void**> g_clones; // original vtable -> patched copy
     std::atomic<bool> g_presented{ false };
+    std::atomic<ULONGLONG> g_firstPresent{ 0 }, g_lastPresent{ 0 }; // frame-gap log (file scope: no TLS guard)
+    std::atomic<int> g_gapsLogged{ 0 };
 
     using CreateSwapChainFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
     using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
@@ -259,6 +261,13 @@ namespace
     {
         if (!g_presented.exchange(true))
             HOST_LOG(L"first game frame presented");
+        {
+            // Hitches: a frame that took more than 100 ms since the last one.
+            ULONGLONG now = GetTickCount64(), prev = g_lastPresent.exchange(now);
+            if (!g_firstPresent) g_firstPresent = now;
+            if (prev && now - prev > 100 && g_gapsLogged++ < 200)
+                HOST_LOG(L"frame gap %llu ms at %.1f s", now - prev, (now - g_firstPresent) / 1000.0);
+        }
         {
             std::lock_guard lock(g_tapLock);
             ULONGLONG now = GetTickCount64();
