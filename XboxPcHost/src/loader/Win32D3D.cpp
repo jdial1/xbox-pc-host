@@ -4,6 +4,7 @@
 #include "Log.h"
 
 #include <map>
+#include <d3dcompiler.h>
 
 // The game's Direct3D, with the window part rewritten. D3D11CreateDevice runs
 // for real, but on an adapter whose DXGI factory is patched so the game's
@@ -16,6 +17,7 @@ namespace
 {
     // IUnknown 0-2, IDXGIObject 3-6, IDXGIFactory 7-11, so these are the slots we replace.
     constexpr size_t kMakeWindowAssociation = 8, kCreateSwapChain = 10;
+    constexpr size_t kCreateSwapChainForHwnd = 15; // IDXGIFactory1 ends at 13, then IsWindowedStereoEnabled
     constexpr size_t kPresent = 8; // IDXGIDeviceSubObject ends at 7, then IDXGISwapChain starts with Present
     constexpr size_t kResizeBuffers = 13; // after GetBuffer, Set/GetFullscreenState and GetDesc
 
@@ -89,23 +91,25 @@ namespace
     // The game has no HWND association to make.
     HRESULT STDMETHODCALLTYPE Hook_MakeWindowAssociation(IDXGIFactory*, HWND, UINT) { return S_OK; }
 
-    HRESULT STDMETHODCALLTYPE Hook_CreateSwapChain(IDXGIFactory*, IUnknown* device, DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** out)
+    // Every way a game makes a swapchain ends here: it is made on the CoreWindow, in the flip model
+    // a CoreWindow needs, and its Present and ResizeBuffers are hooked. Returns the game's interface.
+    HRESULT MakeGameSwapChain(IUnknown* device, DXGI_SWAP_CHAIN_DESC1 d, UINT sampleCount, REFIID iid, void** out)
     {
-        if (!g_display || !device || !desc || !out)
+        if (!g_display || !device || !out)
             return DXGI_ERROR_INVALID_CALL;
-
-        DXGI_SWAP_CHAIN_DESC1 d{};
-        d.Width = desc->BufferDesc.Width ? desc->BufferDesc.Width : g_display->Width();
-        d.Height = desc->BufferDesc.Height ? desc->BufferDesc.Height : g_display->Height();
-        d.Format = FlipFormat(desc->BufferDesc.Format);
-        d.SampleDesc.Count = 1; // flip model has no multisampled swapchains
-        d.BufferUsage = desc->BufferUsage | DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        d.BufferCount = std::max<UINT>(2, desc->BufferCount);
+        d.Width = d.Width ? d.Width : g_display->Width();
+        d.Height = d.Height ? d.Height : g_display->Height();
+        d.Format = FlipFormat(d.Format);
+        d.SampleDesc = { 1, 0 }; // flip model has no multisampled swapchains
+        d.BufferUsage |= DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        d.BufferCount = std::clamp<UINT>(d.BufferCount, 2, 16);
         d.Scaling = DXGI_SCALING_STRETCH;
-        d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        if (d.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD)
+            d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
         d.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-        if (desc->SampleDesc.Count > 1)
-            HOST_LOG(L"game asked for %u-sample swapchain; using 1", desc->SampleDesc.Count);
+        d.Stereo = FALSE;
+        if (sampleCount > 1)
+            HOST_LOG(L"game asked for %u-sample swapchain; using 1", sampleCount);
 
         IDXGISwapChain1* swapChain1 = nullptr;
         HRESULT hr = g_display->CreateSwapChain(device, d, &swapChain1);
@@ -116,26 +120,66 @@ namespace
         }
         HOST_LOG(L"game swapchain %ux%u created on CoreWindow", d.Width, d.Height);
 
-        IDXGISwapChain* swapChain = nullptr;
-        hr = swapChain1->QueryInterface(__uuidof(IDXGISwapChain), reinterpret_cast<void**>(&swapChain));
-        swapChain1->Release();
-        if (FAILED(hr))
-            return hr;
-
-        void** original = Patch(swapChain, kSwapChainSlots, {
+        // One vtable serves IDXGISwapChain and its later versions, so patching it covers all of them.
+        void** original = Patch(swapChain1, kSwapChainSlots, {
             { kPresent, reinterpret_cast<void*>(&Hook_Present) },
             { kResizeBuffers, reinterpret_cast<void*>(&Hook_ResizeBuffers) } });
         g_originalPresent = reinterpret_cast<PresentFn>(original[kPresent]);
         g_originalResizeBuffers = reinterpret_cast<ResizeBuffersFn>(original[kResizeBuffers]);
-        *out = swapChain;
-        return S_OK;
+        hr = swapChain1->QueryInterface(iid, out);
+        swapChain1->Release();
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE Hook_CreateSwapChain(IDXGIFactory*, IUnknown* device, DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** out)
+    {
+        if (!desc)
+            return DXGI_ERROR_INVALID_CALL;
+        DXGI_SWAP_CHAIN_DESC1 d{};
+        d.Width = desc->BufferDesc.Width;
+        d.Height = desc->BufferDesc.Height;
+        d.Format = desc->BufferDesc.Format;
+        d.BufferUsage = desc->BufferUsage;
+        d.BufferCount = desc->BufferCount;
+        d.SwapEffect = desc->SwapEffect;
+        d.Flags = desc->Flags;
+        return MakeGameSwapChain(device, d, desc->SampleDesc.Count, __uuidof(IDXGISwapChain), reinterpret_cast<void**>(out));
+    }
+
+    HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForHwnd(IDXGIFactory2*, IUnknown* device, HWND, const DXGI_SWAP_CHAIN_DESC1* desc,
+        const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*, IDXGIOutput*, IDXGISwapChain1** out)
+    {
+        if (!desc)
+            return DXGI_ERROR_INVALID_CALL;
+        return MakeGameSwapChain(device, *desc, desc->SampleDesc.Count, __uuidof(IDXGISwapChain1), reinterpret_cast<void**>(out));
     }
 
     void PatchFactory(IDXGIFactory* factory)
     {
+        // Slot 15 is past the end of an IDXGIFactory/1 vtable; such a factory never calls it.
         Patch(factory, kFactorySlots, {
             { kMakeWindowAssociation, reinterpret_cast<void*>(&Hook_MakeWindowAssociation) },
-            { kCreateSwapChain, reinterpret_cast<void*>(&Hook_CreateSwapChain) } });
+            { kCreateSwapChain, reinterpret_cast<void*>(&Hook_CreateSwapChain) },
+            { kCreateSwapChainForHwnd, reinterpret_cast<void*>(&Hook_CreateSwapChainForHwnd) } });
+    }
+
+    // A factory the game makes itself is a real one, patched like the device's.
+    HRESULT PatchedFactory(HRESULT hr, REFIID iid, void** out)
+    {
+        if (SUCCEEDED(hr) && out && *out)
+        {
+            winrt::com_ptr<IDXGIFactory> factory;
+            if (SUCCEEDED(static_cast<IUnknown*>(*out)->QueryInterface(__uuidof(IDXGIFactory), factory.put_void())))
+                PatchFactory(factory.get());
+        }
+        HOST_LOG(L"CreateDXGIFactory -> 0x%08x", static_cast<unsigned>(hr));
+        return hr;
+    }
+
+    HRESULT WINAPI Shim_CreateDXGIFactory(REFIID iid, void** out) { return PatchedFactory(CreateDXGIFactory1(iid, out), iid, out); }
+    HRESULT WINAPI Shim_CreateDXGIFactory2(UINT flags, REFIID iid, void** out)
+    {
+        return PatchedFactory(CreateDXGIFactory2(flags & ~DXGI_CREATE_FACTORY_DEBUG, iid, out), iid, out);
     }
 
     HRESULT WINAPI Shim_D3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType, HMODULE software, UINT flags,
@@ -177,7 +221,49 @@ void SetGameDisplayForD3D(GameDisplay* display)
     g_presented = false;
 }
 
+namespace
+{
+    // The device as D3D11CreateDevice makes it, then the swapchain as the patched factory would.
+    HRESULT WINAPI Shim_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType, HMODULE software,
+        UINT flags, const D3D_FEATURE_LEVEL* levels, UINT levelCount, UINT sdkVersion, const DXGI_SWAP_CHAIN_DESC* desc,
+        IDXGISwapChain** swapChain, ID3D11Device** device, D3D_FEATURE_LEVEL* chosen, ID3D11DeviceContext** context)
+    {
+        ID3D11Device* made = nullptr;
+        HRESULT hr = Shim_D3D11CreateDevice(adapter, driverType, software, flags, levels, levelCount, sdkVersion, &made, chosen, context);
+        if (FAILED(hr) || !made)
+            return hr;
+        if (desc && swapChain)
+        {
+            DXGI_SWAP_CHAIN_DESC copy = *desc;
+            hr = Hook_CreateSwapChain(nullptr, made, &copy, swapChain);
+            if (FAILED(hr))
+            {
+                made->Release();
+                return hr;
+            }
+        }
+        if (device) *device = made;
+        else made->Release();
+        return hr;
+    }
+}
+
 void RegisterD3D(Win32Layer& layer)
 {
     layer.Register("d3d11!D3D11CreateDevice", reinterpret_cast<void*>(&Shim_D3D11CreateDevice));
+    layer.Register("d3d11!D3D11CreateDeviceAndSwapChain", reinterpret_cast<void*>(&Shim_D3D11CreateDeviceAndSwapChain));
+    layer.Register("dxgi!CreateDXGIFactory", reinterpret_cast<void*>(&Shim_CreateDXGIFactory));
+    layer.Register("dxgi!CreateDXGIFactory1", reinterpret_cast<void*>(&Shim_CreateDXGIFactory));
+    layer.Register("dxgi!CreateDXGIFactory2", reinterpret_cast<void*>(&Shim_CreateDXGIFactory2));
+    // Run-time shader compilation is allowed in the app partition; every version name maps to the one we link.
+    for (const char* dll : { "d3dcompiler_47", "d3dcompiler_46", "d3dcompiler_43" })
+    {
+        std::string d = std::string(dll) + "!";
+        layer.Register((d + "D3DCompile").c_str(), reinterpret_cast<void*>(&D3DCompile));
+        layer.Register((d + "D3DCompile2").c_str(), reinterpret_cast<void*>(&D3DCompile2));
+        layer.Register((d + "D3DReflect").c_str(), reinterpret_cast<void*>(&D3DReflect));
+        layer.Register((d + "D3DCreateBlob").c_str(), reinterpret_cast<void*>(&D3DCreateBlob));
+        layer.Register((d + "D3DGetBlobPart").c_str(), reinterpret_cast<void*>(&D3DGetBlobPart));
+        layer.Register((d + "D3DStripShader").c_str(), reinterpret_cast<void*>(&D3DStripShader));
+    }
 }
