@@ -102,6 +102,34 @@ namespace
         return h;
     }
 
+    // The console's sandbox refuses VOLUME_NAME_DOS (it asks the mount manager), and the STL's
+    // canonical() needs it. Every file the game opens is on the game folder's drive, so the path
+    // without a volume plus that drive is the same answer.
+    DWORD WINAPI Shim_GetFinalPathNameByHandleW(HANDLE file, LPWSTR out, DWORD size, DWORD flags)
+    {
+        DWORD n = GetFinalPathNameByHandleW(file, out, size, flags);
+        if (n != 0 || GetLastError() != ERROR_ACCESS_DENIED || (flags & 0x3) != 0 /* VOLUME_NAME_DOS */)
+            return n;
+        std::wstring prefix;
+        {
+            std::lock_guard lock(g_lock);
+            prefix = L"\\\\?\\" + g_root.root_name().wstring(); // \\?\Q:
+        }
+        DWORD need = GetFinalPathNameByHandleW(file, nullptr, 0, (flags & ~0x3u) | 0x4 /* VOLUME_NAME_NONE */);
+        if (need == 0)
+            return 0;
+        std::wstring tail(need, L'\0');
+        DWORD got = GetFinalPathNameByHandleW(file, tail.data(), need, (flags & ~0x3u) | 0x4);
+        if (got == 0 || got >= need)
+            return 0;
+        tail.resize(got);
+        std::wstring full = prefix + tail;
+        if (!out || size <= full.size())
+            return static_cast<DWORD>(full.size() + 1); // the size needed, with the terminator
+        memcpy(out, full.c_str(), (full.size() + 1) * sizeof(wchar_t));
+        return static_cast<DWORD>(full.size());
+    }
+
     HANDLE WINAPI Shim_CreateFileA(LPCSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
         DWORD disposition, DWORD flags, HANDLE templateFile)
     {
@@ -395,6 +423,7 @@ void RegisterFiles(Win32Layer& layer)
 #define SHIM(fn) layer.Register("kernel32!" #fn, reinterpret_cast<void*>(&Shim_##fn))
     SHIM(CreateFileA);
     SHIM(CreateFileW);
+    SHIM(GetFinalPathNameByHandleW);
     SHIM(GetFileSize);
     SHIM(FindFirstFileA);
     SHIM(FindFirstFileW);

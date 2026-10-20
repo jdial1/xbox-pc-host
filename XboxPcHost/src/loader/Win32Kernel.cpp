@@ -462,7 +462,6 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", GetFileInformationByHandleEx);
     PASS("kernel32", GetFileSizeEx);
     PASS("kernel32", GetFileType);
-    PASS("kernel32", GetFinalPathNameByHandleW);
     PASS("kernel32", GetLocaleInfoA);
     PASS("kernel32", GetLocaleInfoEx);
     PASS("kernel32", GetLocaleInfoW);
