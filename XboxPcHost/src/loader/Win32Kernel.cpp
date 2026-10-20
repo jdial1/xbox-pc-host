@@ -385,18 +385,23 @@ namespace
     }
 }
 
+namespace
+{
+    std::atomic<DWORD> g_hostUiThread{ 0 };
+}
+
+void NoteHostUiThread() { g_hostUiThread = GetCurrentThreadId(); }
+
 void LogGameThreadStacks(const wchar_t* why)
 {
+    // The game's main thread and the host's UI thread; the game's workers are usually idle.
     std::vector<HANDLE> threads;
-    {
-        std::lock_guard lock(g_threadLock);
-        for (HANDLE t : g_threads)
-            if (t) threads.push_back(t);
-    }
-    HANDLE main = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE,
-        g_process.mainThread);
-    if (main) threads.insert(threads.begin(), main);
-    HOST_LOG(L"%s: %zu game threads", why, threads.size());
+    constexpr DWORD kAccess = THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE;
+    HANDLE main = OpenThread(kAccess, FALSE, g_process.mainThread);
+    if (main) threads.push_back(main);
+    HANDLE ui = g_hostUiThread ? OpenThread(kAccess, FALSE, g_hostUiThread) : nullptr;
+    if (ui) threads.push_back(ui);
+    HOST_LOG(L"%s", why);
     for (HANDLE t : threads)
     {
         if (WaitForSingleObject(t, 0) == WAIT_OBJECT_0 || GetThreadId(t) == GetCurrentThreadId())
@@ -411,10 +416,11 @@ void LogGameThreadStacks(const wchar_t* why)
                 count = WalkFrames(c, frames, 32);
             ResumeThread(t);
         }
-        HOST_LOG(L"thread %lu%s:", GetThreadId(t), t == main ? L" (main)" : L"");
+        HOST_LOG(L"thread %lu%s:", GetThreadId(t), t == main ? L" (game main)" : L" (host UI)");
         LogFrames(frames, count);
     }
     if (main) CloseHandle(main);
+    if (ui) CloseHandle(ui);
 }
 
 size_t GameThreadsAlive(DWORD waitMs)

@@ -844,6 +844,7 @@ namespace
 void AttachGameWindow(winrt::Windows::UI::Core::CoreWindow const& window)
 {
     using namespace winrt::Windows::UI::Core;
+    NoteHostUiThread();
     DetachGameWindow();
     if (!window)
         return;

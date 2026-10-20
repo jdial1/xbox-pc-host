@@ -123,6 +123,7 @@ void LogGameStack(const wchar_t* why, const CONTEXT* from = nullptr); // from: a
 
 // Logs where every game thread is right now (each suspended briefly): for stalls.
 void LogGameThreadStacks(const wchar_t* why);
+void NoteHostUiThread(); // call on the CoreWindow's thread
 
 // How many threads the game started are still running, after waiting up to waitMs for each.
 // Their code lives in the game's image, so the image can't be unmapped while any run.
