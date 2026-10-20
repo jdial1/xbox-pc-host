@@ -61,6 +61,7 @@ namespace
 
 Win32Layer::Win32Layer()
 {
+    RegisterPassThrough(*this);
     RegisterKernel32(*this);
     RegisterFiles(*this);
     RegisterFakes(*this);
@@ -72,6 +73,8 @@ Win32Layer::Win32Layer()
     RegisterGdi(*this);
     RegisterNet(*this);
     RegisterLocale(*this);
+    RegisterCom(*this);
+    RegisterGdiPlus(*this);
 }
 
 void Win32Layer::Register(const char* key, void* fn)

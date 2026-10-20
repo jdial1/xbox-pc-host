@@ -174,6 +174,37 @@ namespace
     }
     HRESULT WINAPI Shim_SetErrorInfo(ULONG, IUnknown*) { return S_OK; }
 
+    BOOL WINAPI Shim_GetModuleHandleExA(DWORD flags, LPCSTR name, HMODULE* module)
+    {
+        if (flags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS)
+            return Shim_GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(name), module);
+        return Shim_GetModuleHandleExW(flags, name ? Widen(name).c_str() : nullptr, module);
+    }
+
+    struct ModuleInfo { LPVOID base; DWORD size; LPVOID entry; }; // MODULEINFO
+    BOOL WINAPI Shim_K32GetModuleInformation(HANDLE, HMODULE module, ModuleInfo* info, DWORD)
+    {
+        if (!info || !IsGameModule(module))
+        {
+            SetLastError(ERROR_INVALID_HANDLE);
+            return FALSE;
+        }
+        auto base = reinterpret_cast<uint8_t*>(g_process.base);
+        auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
+        *info = { base, nt->OptionalHeader.SizeOfImage, base + nt->OptionalHeader.AddressOfEntryPoint };
+        return TRUE;
+    }
+
+    // C++ throw ends up here (code 0xE06D7363). Logging the first throws' stacks shows where an
+    // error that a game catches and reports somewhere else really came from.
+    std::atomic<int> g_throwsLogged{ 0 };
+    VOID WINAPI Shim_RaiseException(DWORD code, DWORD flags, DWORD count, const ULONG_PTR* arguments)
+    {
+        if (code == 0xE06D7363 && g_throwsLogged++ < 16)
+            LogGameStack(L"C++ exception thrown");
+        RaiseException(code, flags, count, arguments);
+    }
+
     // The game's "process" is itself; anything else is out of reach.
     BOOL WINAPI Shim_TerminateProcess(HANDLE process, UINT code)
     {
@@ -184,16 +215,62 @@ namespace
     }
 }
 
-void SetGameProcess(void* imageBase, std::filesystem::path const& exe)
+#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
+// In WindowsApp.lib, though the app partition's headers don't declare it.
+extern "C" __declspec(dllimport) PVOID WINAPI AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER handler);
+#endif
+
+namespace
 {
+    // Games catch their own crashes (Factorio turns an access violation into SIGSEGV and a report
+    // of its own), so the host's handler never sees them. A first-chance look logs where the first
+    // few faults happened before the game's handlers get them.
+    std::atomic<int> g_faultsLogged{ 0 };
+    std::atomic<bool> g_faultLoggerAdded{ false };
+    LONG CALLBACK LogFirstChanceFault(EXCEPTION_POINTERS* info)
+    {
+        auto const* record = info->ExceptionRecord;
+        DWORD code = record->ExceptionCode;
+        bool fault = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+            code == EXCEPTION_PRIV_INSTRUCTION || code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_STACK_OVERFLOW ||
+            code == STATUS_HEAP_CORRUPTION || code == EXCEPTION_ARRAY_BOUNDS_EXCEEDED;
+        if (!fault || g_faultsLogged++ >= 8)
+            return EXCEPTION_CONTINUE_SEARCH;
+        auto at = static_cast<uint8_t*>(record->ExceptionAddress);
+        bool inGame = InGameImage(at);
+        auto offset = static_cast<unsigned long long>(inGame ? at - reinterpret_cast<uint8_t*>(g_process.base) : reinterpret_cast<uintptr_t>(at));
+        if (code == EXCEPTION_ACCESS_VIOLATION && record->NumberParameters >= 2)
+        {
+            auto kind = record->ExceptionInformation[0];
+            HOST_LOG(L"first-chance access violation (%s 0x%llx) at %s0x%llx", kind == 1 ? L"write" : kind == 8 ? L"execute" : L"read",
+                static_cast<unsigned long long>(record->ExceptionInformation[1]), inGame ? L"game+" : L"", offset);
+        }
+        else
+            HOST_LOG(L"first-chance exception 0x%08X at %s0x%llx", static_cast<unsigned>(code), inGame ? L"game+" : L"", offset);
+        auto const* c = info->ContextRecord;
+        HOST_LOG(L"  rax=%llx rbx=%llx rcx=%llx rdx=%llx rsi=%llx rdi=%llx r8=%llx r9=%llx rsp=%llx", c->Rax, c->Rbx, c->Rcx,
+            c->Rdx, c->Rsi, c->Rdi, c->R8, c->R9, c->Rsp);
+        LogGameStack(L"fault", c);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+}
+
+void SetGameProcess(void* imageBase, std::filesystem::path const& exe, std::filesystem::path const& root)
+{
+    // Not a function-local static: its guard would add a thread_local to the host's TLS block.
+    if (!g_faultLoggerAdded.exchange(true))
+        AddVectoredExceptionHandler(1, LogFirstChanceFault);
     g_process.base = static_cast<HMODULE>(imageBase);
     g_process.exeW = exe.wstring();
     g_process.exeA = Narrow(g_process.exeW);
     g_process.commandLineW = L"\"" + g_process.exeW + L"\"";
     g_process.commandLineA = "\"" + g_process.exeA + "\"";
 
-    // A game with no menu of its own can be pointed at what to do with host-args.txt next to its exe.
-    std::ifstream argsFile(exe.parent_path() / L"host-args.txt");
+    // A game with no menu of its own can be pointed at what to do with host-args.txt, in its
+    // folder or next to its exe.
+    std::ifstream argsFile(root / L"host-args.txt");
+    if (!argsFile)
+        argsFile.open(exe.parent_path() / L"host-args.txt");
     std::string args;
     if (argsFile && std::getline(argsFile, args) && !args.empty())
     {
@@ -203,8 +280,62 @@ void SetGameProcess(void* imageBase, std::filesystem::path const& exe)
         HOST_LOG(L"command line: %S", g_process.commandLineA.c_str());
     }
     g_process.mainThread = GetCurrentThreadId();
-    SetGameRoot(exe.parent_path());
+    SetGameRoot(root, exe.parent_path());
     g_process.exitCode = 0;
+}
+
+void LogGameStack(const wchar_t* why, const CONTEXT* from)
+{
+    // Unwind frame by frame with the tables RtlAddFunctionTable registered for the game's image
+    // (RtlCaptureStackBackTrace gives up inside it).
+    void* frames[40];
+    USHORT count = 0;
+    CONTEXT context{};
+    if (from)
+    {
+        context = *from;
+        if (!context.Rip) // a call through a null pointer: the caller's return address is on top
+        {
+            context.Rip = *reinterpret_cast<DWORD64*>(context.Rsp);
+            context.Rsp += 8;
+        }
+    }
+    else
+        RtlCaptureContext(&context);
+    while (count < 40 && context.Rip)
+    {
+        frames[count++] = reinterpret_cast<void*>(context.Rip);
+        DWORD64 imageBase = 0;
+        PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr);
+        if (!function)
+        {
+            // A leaf function: the return address is on top of the stack.
+            context.Rip = *reinterpret_cast<DWORD64*>(context.Rsp);
+            context.Rsp += 8;
+            continue;
+        }
+        void* handlerData = nullptr;
+        DWORD64 establisher = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip, function, &context, &handlerData, &establisher, nullptr);
+    }
+    HOST_LOG(L"%s; stack:", why);
+    auto base = reinterpret_cast<uint8_t*>(g_process.base);
+    for (USHORT i = from ? 0 : 1; i < count; ++i) // 0 is this function, unless the walk starts at a fault
+    {
+        auto at = static_cast<uint8_t*>(frames[i]);
+        if (InGameImage(at))
+        {
+            HOST_LOG(L"  game+0x%llx", static_cast<unsigned long long>(at - base));
+            continue;
+        }
+        HMODULE module = nullptr;
+        wchar_t name[MAX_PATH] = L"?";
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(at), &module))
+            GetModuleFileNameW(module, name, MAX_PATH);
+        HOST_LOG(L"  %s+0x%llx", std::filesystem::path(name).filename().c_str(),
+            static_cast<unsigned long long>(module ? at - reinterpret_cast<uint8_t*>(module) : reinterpret_cast<uintptr_t>(at)));
+    }
 }
 
 size_t GameThreadsAlive(DWORD waitMs)
@@ -250,6 +381,9 @@ void RegisterKernel32(Win32Layer& layer)
     layer.Register("kernel32!VirtualProtect", reinterpret_cast<void*>(&Shim_VirtualProtect));
     layer.Register("kernel32!GetStartupInfoW", reinterpret_cast<void*>(&Shim_GetStartupInfoW));
     layer.Register("kernel32!TerminateProcess", reinterpret_cast<void*>(&Shim_TerminateProcess));
+    layer.Register("kernel32!RaiseException", reinterpret_cast<void*>(&Shim_RaiseException));
+    layer.Register("kernel32!GetModuleHandleExA", reinterpret_cast<void*>(&Shim_GetModuleHandleExA));
+    layer.Register("kernel32!K32GetModuleInformation", reinterpret_cast<void*>(&Shim_K32GetModuleInformation));
 
     PASS("kernel32", CloseHandle);
     PASS("kernel32", CreateEventA);
@@ -356,7 +490,6 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", MultiByteToWideChar);
     PASS("kernel32", OpenThread);
     PASS("kernel32", OutputDebugStringW);
-    PASS("kernel32", RaiseException);
     PASS("kernel32", ReleaseSRWLockExclusive);
     PASS("kernel32", ReleaseSRWLockShared);
     PASS("kernel32", ReleaseSemaphore);

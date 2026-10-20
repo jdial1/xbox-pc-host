@@ -28,7 +28,9 @@ private:
     std::vector<std::string> m_unresolved;
 };
 
-// One per area of the Win32 surface (Win32Kernel.cpp, ...).
+// One per area of the Win32 surface (Win32Kernel.cpp, ...). RegisterPassThrough runs first, so a
+// shim registered by any of the others replaces a pass-through of the same name.
+void RegisterPassThrough(Win32Layer& layer);
 void RegisterKernel32(Win32Layer& layer);
 void RegisterFiles(Win32Layer& layer);
 void RegisterFakes(Win32Layer& layer);
@@ -40,13 +42,16 @@ void RegisterAudio(Win32Layer& layer);
 void RegisterGdi(Win32Layer& layer);
 void RegisterNet(Win32Layer& layer);
 void RegisterLocale(Win32Layer& layer);
+void RegisterCom(Win32Layer& layer);
+void RegisterGdiPlus(Win32Layer& layer);
 class GameDisplay;
 void SetGameDisplayForD3D(GameDisplay* display);
 void SetGameDisplayForGdi(GameDisplay* display);
 
 // The game "process": what GetModuleHandle, GetModuleFileName, GetCommandLine
 // and ExitProcess report. One game runs at a time. Call from the game thread.
-void SetGameProcess(void* imageBase, std::filesystem::path const& exe);
+// root is the game's folder (what the game may see); the exe can be anywhere below it.
+void SetGameProcess(void* imageBase, std::filesystem::path const& exe, std::filesystem::path const& root);
 
 // ExitProcess on the game's main thread raises this so Run() can unwind to its
 // handler; the exit code comes from GameExitCode().
@@ -55,7 +60,7 @@ unsigned long GameExitCode();
 
 // File paths: the game only sees its own folder (see Win32Files.cpp).
 std::filesystem::path MapGamePath(const wchar_t* name);
-void SetGameRoot(std::filesystem::path const& root);
+void SetGameRoot(std::filesystem::path const& root, std::filesystem::path const& currentDirectory);
 
 // "KERNEL32.DLL" -> "kernel32": the form the "dll!Name" table keys use.
 std::string NormalizeDllName(const char* dll);
@@ -77,6 +82,15 @@ void PostGameMessage(UINT message, WPARAM wParam, LPARAM lParam);
 UINT GameScreenWidth();
 UINT GameScreenHeight();
 HDC GameWindowDc(); // what the game's GetDC(hwnd) returns
+HMONITOR GameMonitor(); // the one monitor user32 and DXGI report
+
+// The DXGI output for that monitor, parented to the adapter (Win32DxgiOutput.cpp). Returns a new reference.
+struct IDXGIOutput;
+struct IDXGIAdapter;
+IDXGIOutput* MakeGameOutput(IDXGIAdapter* adapter);
+
+// Test harnesses only: a copy of the game's D3D back buffer (BGRA) a few times a second, as it presents.
+void SetGameD3DFrameTap(std::function<void(const uint32_t* bgra, UINT width, UINT height, UINT pitchBytes)> tap);
 
 // The XAudio2 engine winmm's waveOut plays through; null means no audio device.
 void SetGameAudio(IXAudio2* engine);
@@ -87,6 +101,10 @@ void SetGameAudio(IXAudio2* engine);
 bool InstallGameTls(PeImage const& image, std::wstring& error);
 void EnterGameThread(DWORD reason);
 void LeaveGameThread();
+
+// Logs the calling thread's stack: "game+0x..." for frames in the game's image (resolve them with
+// toolsesolve_game_offsets.py and the game's pdb), module+offset for everything else.
+void LogGameStack(const wchar_t* why, const CONTEXT* from = nullptr); // from: a fault's context, else the caller's
 
 // How many threads the game started are still running, after waiting up to waitMs for each.
 // Their code lives in the game's image, so the image can't be unmapped while any run.

@@ -129,6 +129,10 @@
     <ClCompile Include="src\loader\Win32Input.cpp" />
     <ClCompile Include="src\loader\Win32Tls.cpp" />
     <ClCompile Include="src\loader\Win32Locale.cpp" />
+    <ClCompile Include="src\loader\Win32PassThrough.cpp" />
+    <ClCompile Include="src\loader\Win32Com.cpp" />
+    <ClCompile Include="src\loader\Win32GdiPlus.cpp" />
+    <ClCompile Include="src\loader\Win32DxgiOutput.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

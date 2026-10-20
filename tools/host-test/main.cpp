@@ -3,6 +3,7 @@
 //   host-test.exe <exe> [--expect "text"] [--timeout seconds]
 //   --inject keys|pad  holds scripted keyboard/mouse or controller input for a moment, then closes the window
 //   --shot file.bmp    saves the last software (GDI) frame when the run ends
+//   --root dir         the game's folder, when the exe is below it (bin\x64\Factorio.exe)
 //   --script file      timed steps, one per line ("#" starts a comment), seconds from the game's start:
 //                        <s> move <x> <y>   pointer to a window position (WM_MOUSEMOVE)
 //                        <s> click [right]  press and release a button where the pointer is
@@ -188,6 +189,7 @@ int wmain(int argc, wchar_t** argv)
     std::wstring expect;
     std::wstring inject;
     std::filesystem::path shot;
+    std::filesystem::path root; // the game's folder when its exe is below it (default: the exe's folder)
     std::vector<Step> script;
     int timeout = 20;
     for (int i = 2; i + 1 < argc; i += 2)
@@ -196,6 +198,7 @@ int wmain(int argc, wchar_t** argv)
         else if (wcscmp(argv[i], L"--timeout") == 0) timeout = _wtoi(argv[i + 1]);
         else if (wcscmp(argv[i], L"--inject") == 0) inject = argv[i + 1];
         else if (wcscmp(argv[i], L"--shot") == 0) shot = argv[i + 1];
+        else if (wcscmp(argv[i], L"--root") == 0) root = std::filesystem::absolute(argv[i + 1]);
         else if (wcscmp(argv[i], L"--script") == 0) script = LoadScript(argv[i + 1]);
     }
 
@@ -203,7 +206,9 @@ int wmain(int argc, wchar_t** argv)
     InstallCrashLogging();
 
     // The runtime only touches the library for bundled games; writable entries skip that.
-    GameEntry game{ exe.parent_path().filename().wstring(), exe.parent_path(), exe, true };
+    if (root.empty())
+        root = exe.parent_path();
+    GameEntry game{ root.filename().wstring(), root, exe, true };
     GameLibrary library;
     Graphics graphics; // never initialized: it reports size 0 and refuses to hand over a window
     Input input; // never initialized: no devices, so the game sees an idle keyboard and mouse

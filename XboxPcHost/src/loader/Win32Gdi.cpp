@@ -272,6 +272,10 @@ namespace
         return count;
     }
 
+    // A display DC is the window's; monochrome or DDB bitmaps are only used for icon masks here.
+    HDC WINAPI Shim_CreateDCW(LPCWSTR, LPCWSTR, LPCWSTR, const void*) { return GameWindowDc(); }
+    HGDIOBJ WINAPI Shim_CreateBitmap(int, int, UINT, UINT, const void*) { return kStockObject; }
+
     // Palettes only matter on 8-bit displays, and ours is 32-bit: DIB color tables carry the colors.
     HGDIOBJ WINAPI Shim_CreatePalette(const void*) { return kStockObject; }
     HGDIOBJ WINAPI Shim_SelectPalette(HDC, HGDIOBJ, BOOL) { return kStockObject; }
@@ -309,6 +313,10 @@ void RegisterGdi(Win32Layer& layer)
     SHIM(SetDIBitsToDevice);
     SHIM(GetDeviceCaps);
     SHIM(SetDIBColorTable);
+    SHIM(CreateDCW);
+    SHIM(CreateBitmap);
+    layer.Register("gdi32!CreateDCA", reinterpret_cast<void*>(&Shim_CreateDCW));
+    layer.Register("gdi32!CreateCompatibleBitmap", reinterpret_cast<void*>(&Shim_CreateBitmap));
     SHIM(CreatePalette);
     SHIM(SelectPalette);
     SHIM(RealizePalette);

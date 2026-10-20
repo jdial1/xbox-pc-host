@@ -47,6 +47,11 @@ fs::path MapGamePath(const wchar_t* name)
 {
     std::lock_guard lock(g_lock);
     std::wstring s = name ? name : L"";
+    // An empty path names nothing: Windows fails it (ERROR_PATH_NOT_FOUND), so the real call has to
+    // see it empty too. Made relative to the current directory it would "exist", and a game that
+    // probes an optional, unset folder with exists("") then lists it (Factorio's mod manager).
+    if (s.empty())
+        return {};
     if (s.rfind(L"\\\\?\\", 0) == 0) s.erase(0, 4);
     std::replace(s.begin(), s.end(), L'/', L'\\');
 
@@ -67,11 +72,11 @@ fs::path MapGamePath(const wchar_t* name)
     return result.lexically_normal();
 }
 
-void SetGameRoot(fs::path const& root)
+void SetGameRoot(fs::path const& root, fs::path const& currentDirectory)
 {
     std::lock_guard lock(g_lock);
     g_root = root.lexically_normal();
-    g_cwd = g_root;
+    g_cwd = currentDirectory.lexically_normal(); // Windows starts a game with its exe's folder current
 }
 
 namespace
@@ -79,6 +84,8 @@ namespace
     HANDLE WINAPI Shim_CreateFileW(LPCWSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES security,
         DWORD disposition, DWORD flags, HANDLE)
     {
+        if (!name || !*name)
+            LogGameStack(L"CreateFile with an empty name");
         fs::path real = MapGamePath(name);
         CREATEFILE2_EXTENDED_PARAMETERS ext{};
         ext.dwSize = sizeof(ext);
@@ -138,6 +145,18 @@ namespace
         if (h != INVALID_HANDLE_VALUE)
             ToFindDataA(w, *data);
         return h;
+    }
+
+    // The real FindNextFileW (FindFirstFileExFromApp handles work with it); anything but the normal
+    // end of a listing is logged.
+    BOOL WINAPI Shim_FindNextFileW(HANDLE find, LPWIN32_FIND_DATAW data)
+    {
+        BOOL ok = FindNextFileW(find, data);
+        DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+        if (!ok && error != ERROR_NO_MORE_FILES)
+            LogOpen(L"find next : error " + std::to_wstring(error));
+        SetLastError(error);
+        return ok;
     }
 
     BOOL WINAPI Shim_FindNextFileA(HANDLE find, LPWIN32_FIND_DATAA data)
@@ -251,7 +270,13 @@ namespace
     HANDLE WINAPI Shim_FindFirstFileExW(LPCWSTR name, FINDEX_INFO_LEVELS level, LPVOID data, FINDEX_SEARCH_OPS op,
         LPVOID filter, DWORD flags)
     {
-        return FindFirstFileExFromAppW(MapGamePath(name).c_str(), level, data, op, filter, flags);
+        fs::path real = MapGamePath(name);
+        HANDLE h = FindFirstFileExFromAppW(real.c_str(), level, data, op, filter, flags);
+        DWORD error = GetLastError();
+        std::wstring line = L"find " + std::wstring(name ? name : L"(null)") + L" -> " + real.wstring();
+        LogOpen(h == INVALID_HANDLE_VALUE ? line + L" : error " + std::to_wstring(error) : line + L" : ok");
+        SetLastError(error);
+        return h;
     }
 
     BOOL WINAPI Shim_CreateDirectoryExW(LPCWSTR, LPCWSTR name, LPSECURITY_ATTRIBUTES security)
@@ -397,6 +422,5 @@ void RegisterFiles(Win32Layer& layer)
     layer.Register("kernel32!CreateSymbolicLinkW", reinterpret_cast<void*>(&Shim_CreateLinkW));
     layer.Register("shell32!SHGetFolderPathW", reinterpret_cast<void*>(&Shim_SHGetFolderPathW));
     layer.Register("shell32!SHGetFolderPathA", reinterpret_cast<void*>(&Shim_SHGetFolderPathA));
-    // Handles from FindFirstFileExFromApp work with the real FindNextFileW.
-    layer.Register("kernel32!FindNextFileW", reinterpret_cast<void*>(&FindNextFileW));
+    layer.Register("kernel32!FindNextFileW", reinterpret_cast<void*>(&Shim_FindNextFileW));
 }

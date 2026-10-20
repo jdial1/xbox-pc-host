@@ -62,6 +62,16 @@ namespace
         }
     }
 
+    // The high bit of each byte is "down"; toggle state (caps lock) isn't tracked.
+    BOOL WINAPI Shim_GetKeyboardState(PBYTE keys)
+    {
+        if (!keys) return FALSE;
+        std::lock_guard lock(g_lock);
+        for (int vk = 0; vk < 256; ++vk)
+            keys[vk] = KeyDown(vk) ? 0x80 : 0;
+        return TRUE;
+    }
+
     SHORT WINAPI Shim_GetKeyState(int vk)
     {
         std::lock_guard lock(g_lock);
@@ -244,6 +254,7 @@ void FeedGameInput(GameInputFrame const& frame)
 void RegisterInput(Win32Layer& layer)
 {
     layer.Register("user32!GetKeyState", reinterpret_cast<void*>(&Shim_GetKeyState));
+    layer.Register("user32!GetKeyboardState", reinterpret_cast<void*>(&Shim_GetKeyboardState));
     // Every XInput DLL name games load: 1.4 (Windows 8+), 1.3 (DirectX SDK), 9.1.0 (Vista).
     for (const char* dll : { "xinput1_4", "xinput1_3", "xinput9_1_0", "xinputuap" })
     {

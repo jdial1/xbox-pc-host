@@ -30,6 +30,28 @@ namespace
         return TRUE;
     }
 
+    BOOL WINAPI Shim_GetVersionExW(LPOSVERSIONINFOW info)
+    {
+        if (!info || info->dwOSVersionInfoSize < sizeof(OSVERSIONINFOW))
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        info->dwMajorVersion = 10;
+        info->dwMinorVersion = 0;
+        info->dwBuildNumber = 19045;
+        info->dwPlatformId = VER_PLATFORM_WIN32_NT;
+        info->szCSDVersion[0] = L'\0';
+        if (info->dwOSVersionInfoSize >= sizeof(OSVERSIONINFOEXW))
+        {
+            auto ex = reinterpret_cast<OSVERSIONINFOEXW*>(info);
+            ex->wServicePackMajor = ex->wServicePackMinor = 0;
+            ex->wSuiteMask = 0;
+            ex->wProductType = VER_NT_WORKSTATION;
+        }
+        return TRUE;
+    }
+
     template <size_t N>
     UINT CopyString(const char (&text)[N], char* buffer, UINT size)
     {
@@ -169,6 +191,40 @@ namespace
         return S_OK;
     }
 
+    // Crash handlers walk the process; there is nothing of the game's to list beyond its own image.
+    HANDLE WINAPI Shim_CreateToolhelp32Snapshot(DWORD, DWORD) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE; }
+    BOOL WINAPI Shim_ToolhelpNone(HANDLE, void*) { SetLastError(ERROR_NO_MORE_FILES); return FALSE; }
+    HANDLE WINAPI Shim_OpenProcess(DWORD, BOOL, DWORD) { SetLastError(ERROR_ACCESS_DENIED); return nullptr; }
+    BOOL WINAPI Shim_K32EnumProcessModules(HANDLE, HMODULE*, DWORD, LPDWORD needed) { if (needed) *needed = 0; return Denied(); }
+    DWORD WINAPI Shim_K32GetModuleFileNameExA(HANDLE, HMODULE, LPSTR, DWORD) { Denied(); return 0; }
+
+    // The process heap is the host's and is fine; a game's "heap validation failed" means our stub, not its heap.
+    BOOL WINAPI Shim_HeapValidate(HANDLE, DWORD, LPCVOID) { return TRUE; }
+
+    // Not attached to a console, and no power management to keep awake.
+    BOOL WINAPI Shim_AttachConsole(DWORD) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    DWORD WINAPI Shim_SetThreadExecutionState(DWORD) { return 0x80000000; } // previous: ES_CONTINUOUS
+
+    // COM: the app partition has CoInitializeEx; proxy security is the host's.
+    HRESULT WINAPI Shim_CoInitialize(LPVOID) { return CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); }
+    HRESULT WINAPI Shim_CoSetProxyBlanket(void*, DWORD, DWORD, void*, DWORD, DWORD, void*, DWORD) { return S_OK; }
+
+    // The shell has no folders to open and nothing to drop files onto.
+    void* WINAPI Shim_ILCreateFromPathW(LPCWSTR) { return nullptr; }
+    void WINAPI Shim_ILFree(void*) {}
+    HRESULT WINAPI Shim_SHOpenFolderAndSelectItems(void*, UINT, void*, DWORD) { return E_NOTIMPL; }
+    void WINAPI Shim_DragAcceptFiles(HWND, BOOL) {}
+    BOOL WINAPI Shim_ShellExecuteExW(void*) { return Denied(); }
+
+    BOOL WINAPI Shim_GetUserNameA(LPSTR buffer, LPDWORD size)
+    {
+        static const char name[] = "Player";
+        if (!size || *size < sizeof(name)) { if (size) *size = sizeof(name); SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+        memcpy(buffer, name, sizeof(name));
+        *size = sizeof(name);
+        return TRUE;
+    }
+
     // The common dialogs aren't in the app partition. FALSE with no extended
     // error is what the game sees when the user cancels.
     BOOL WINAPI Shim_FileDialog(void*) { return FALSE; }
@@ -180,6 +236,28 @@ void RegisterFakes(Win32Layer& layer)
 #define FAKE(dll, fn, shim) layer.Register(dll "!" #fn, reinterpret_cast<void*>(&shim))
     FAKE("kernel32", IsDebuggerPresent, Shim_IsDebuggerPresent);
     FAKE("kernel32", GetVersionExA, Shim_GetVersionExA);
+    FAKE("kernel32", GetVersionExW, Shim_GetVersionExW);
+    FAKE("kernel32", CreateToolhelp32Snapshot, Shim_CreateToolhelp32Snapshot);
+    FAKE("kernel32", Process32First, Shim_ToolhelpNone);
+    FAKE("kernel32", Process32Next, Shim_ToolhelpNone);
+    FAKE("kernel32", Thread32First, Shim_ToolhelpNone);
+    FAKE("kernel32", Thread32Next, Shim_ToolhelpNone);
+    FAKE("kernel32", OpenProcess, Shim_OpenProcess);
+    FAKE("kernel32", K32EnumProcessModules, Shim_K32EnumProcessModules);
+    FAKE("kernel32", K32GetModuleFileNameExA, Shim_K32GetModuleFileNameExA);
+    FAKE("kernel32", HeapValidate, Shim_HeapValidate);
+    FAKE("kernel32", AttachConsole, Shim_AttachConsole);
+    FAKE("kernel32", SetThreadExecutionState, Shim_SetThreadExecutionState);
+    FAKE("ole32", CoInitialize, Shim_CoInitialize);
+    FAKE("ole32", CoSetProxyBlanket, Shim_CoSetProxyBlanket);
+    FAKE("shell32", ILCreateFromPathW, Shim_ILCreateFromPathW);
+    FAKE("shell32", ILFree, Shim_ILFree);
+    FAKE("shell32", SHOpenFolderAndSelectItems, Shim_SHOpenFolderAndSelectItems);
+    FAKE("shell32", DragAcceptFiles, Shim_DragAcceptFiles);
+    FAKE("shell32", ShellExecuteExW, Shim_ShellExecuteExW);
+    FAKE("advapi32", GetUserNameA, Shim_GetUserNameA);
+    layer.Register("shell32!#190", reinterpret_cast<void*>(&Shim_ILCreateFromPathW));
+    layer.Register("shell32!#155", reinterpret_cast<void*>(&Shim_ILFree));
     FAKE("kernel32", GetSystemDirectoryA, Shim_GetSystemDirectoryA);
     FAKE("kernel32", GetWindowsDirectoryW, Shim_GetWindowsDirectoryW);
     FAKE("kernel32", SetUnhandledExceptionFilter, Shim_SetUnhandledExceptionFilter);

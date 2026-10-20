@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "GameLibrary.h"
 #include "Log.h"
+#include <fstream>
 
 namespace fs = std::filesystem;
 using namespace winrt::Windows::ApplicationModel;
@@ -13,9 +14,20 @@ namespace
         return _wcsicmp(p.extension().c_str(), L".exe") == 0;
     }
 
-    // Pick the main exe in a folder: skip obvious helpers, prefer the largest.
+    // Pick the main exe in a folder: host-exe.txt names it (for exes below the folder, like
+    // bin\x64\Factorio.exe); otherwise skip obvious helpers and prefer the largest at the top.
     fs::path FindMainExe(fs::path const& folder)
     {
+        std::error_code exists;
+        if (std::wifstream named(folder / L"host-exe.txt"); named)
+        {
+            std::wstring relative;
+            std::getline(named, relative);
+            while (!relative.empty() && (relative.back() == L'\r' || relative.back() == L' ')) relative.pop_back();
+            fs::path exe = (folder / relative).lexically_normal();
+            if (!relative.empty() && fs::is_regular_file(exe, exists))
+                return exe;
+        }
         fs::path best;
         uintmax_t bestSize = 0;
         std::error_code ec;

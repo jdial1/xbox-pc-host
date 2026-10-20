@@ -15,7 +15,11 @@ namespace
     GameFrameTap g_frameTap; // test harnesses only
 }
 
-void SetGameFrameTap(GameFrameTap tap) { g_frameTap = std::move(tap); }
+void SetGameFrameTap(GameFrameTap tap)
+{
+    SetGameD3DFrameTap(tap);
+    g_frameTap = std::move(tap);
+}
 
 namespace
 {
@@ -44,6 +48,20 @@ namespace
 
         HRESULT CreateSwapChain(IUnknown* device, DXGI_SWAP_CHAIN_DESC1 const& desc, IDXGISwapChain1** swapChain) override
         {
+            // The desktop harness has no CoreWindow: a composition swapchain needs none, so it is made
+            // here on the game's thread, as Windows would, and its frames reach the harness through
+            // the D3D frame tap.
+            if (!m_graphics.Window() && g_frameTap)
+            {
+                winrt::com_ptr<IDXGIDevice> dxgiDevice;
+                winrt::com_ptr<IDXGIAdapter> adapter;
+                winrt::com_ptr<IDXGIFactory2> factory;
+                HRESULT hr = device->QueryInterface(__uuidof(IDXGIDevice), dxgiDevice.put_void());
+                if (SUCCEEDED(hr)) hr = dxgiDevice->GetAdapter(adapter.put());
+                if (SUCCEEDED(hr)) hr = adapter->GetParent(__uuidof(IDXGIFactory2), factory.put_void());
+                if (SUCCEEDED(hr)) hr = factory->CreateSwapChainForComposition(device, &desc, nullptr, swapChain);
+                return hr;
+            }
             auto job = std::make_shared<Job>();
             job->device.copy_from(device);
             job->desc = desc;
@@ -126,14 +144,14 @@ namespace
 
         HRESULT Create(Job& job)
         {
-            // Only one swapchain can exist on the CoreWindow, so the shell lets go of its own first.
-            if (!m_graphics.ReleaseForGame() && !m_graphics.HandedOver())
-                return E_FAIL;
             auto dxgiDevice = job.device.as<IDXGIDevice>();
             winrt::com_ptr<IDXGIAdapter> adapter;
             winrt::check_hresult(dxgiDevice->GetAdapter(adapter.put()));
             winrt::com_ptr<IDXGIFactory2> factory;
             winrt::check_hresult(adapter->GetParent(__uuidof(IDXGIFactory2), factory.put_void()));
+            // Only one swapchain can exist on the CoreWindow, so the shell lets go of its own first.
+            if (!m_graphics.ReleaseForGame() && !m_graphics.HandedOver())
+                return E_FAIL;
             return factory->CreateSwapChainForCoreWindow(job.device.get(), winrt::get_unknown(m_graphics.Window()),
                 &job.desc, nullptr, job.result.put());
         }
@@ -192,9 +210,11 @@ namespace
             SetState(RunState::Idle);
 
             fs::path exe;
-            if (!PrepareFolder(game, host, exe))
+            if (!PrepareFolder(game, host, exe, m_root))
                 return Fail(L"can't copy the game to LocalState");
-            m_profile = ReadInputProfile(exe.parent_path());
+            m_profile = ReadInputProfile(m_root);
+            if (m_profile == InputProfile::Default)
+                m_profile = ReadInputProfile(exe.parent_path());
             if (m_profile == InputProfile::Pointer)
                 HOST_LOG(L"controller: pointer profile (sticks move the pointer, A/B click)");
 
@@ -280,7 +300,7 @@ namespace
         void Run()
         {
             uint8_t* base = m_image->Base();
-            SetGameProcess(base, m_image->Path());
+            SetGameProcess(base, m_image->Path(), m_root);
             HOST_LOG(L"game thread started at entry +0x%llx",
                 static_cast<unsigned long long>(static_cast<uint8_t*>(m_image->EntryPoint()) - base));
 
@@ -324,15 +344,17 @@ namespace
 
         // The bundled folder is read-only and games write next to their exe,
         // so bundled games are copied into LocalState\Games once and run there.
-        static bool PrepareFolder(GameEntry const& game, HostServices& host, fs::path& exe)
+        static bool PrepareFolder(GameEntry const& game, HostServices& host, fs::path& exe, fs::path& root)
         {
             if (game.writable)
             {
                 exe = game.exe;
+                root = game.folder;
                 return true;
             }
 
             fs::path dest = host.library.UserGamesRoot() / game.name;
+            root = dest;
             exe = dest / game.exe.lexically_relative(game.folder); // fs::relative opens the read-only package folder and throws
 
             std::error_code ec;
@@ -346,6 +368,7 @@ namespace
         std::unique_ptr<GraphicsDisplay> m_screen;
         Input* m_input = nullptr;
         InputProfile m_profile = InputProfile::Default;
+        fs::path m_root; // the game's folder: its exe is somewhere below it
         std::chrono::steady_clock::time_point m_lastTick;
         Win32Layer m_win32;
         std::unique_ptr<PeImage> m_image;

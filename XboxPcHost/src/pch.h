@@ -38,6 +38,7 @@
 #include <cwctype>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
