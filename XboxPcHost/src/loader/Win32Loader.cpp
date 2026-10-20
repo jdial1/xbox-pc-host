@@ -40,40 +40,57 @@ namespace
         return true;
     }
 
+    HMODULE WINAPI Shim_LoadLibraryW(LPCWSTR path);
+
     HMODULE WINAPI Shim_LoadLibraryA(LPCSTR path)
     {
+        return Shim_LoadLibraryW(Widen(path ? path : "").c_str());
+    }
+
+    // A DLL the game ships is mapped for real; every other name gets a fake handle the shims answer for.
+    HMODULE WINAPI Shim_LoadLibraryW(LPCWSTR wpath)
+    {
+        bool isGameFile = false;
+        if (HMODULE dll = LoadGameDllByPath(wpath, isGameFile))
+            return dll;
+        if (isGameFile)
+        {
+            SetLastError(ERROR_MOD_NOT_FOUND); // the game's file, but it couldn't be loaded (logged)
+            return nullptr;
+        }
+        std::string narrow = Narrow(wpath ? wpath : L"");
+        const char* path = wpath ? narrow.c_str() : nullptr;
         HMODULE handle = FakeModule(path ? ModuleName(path).c_str() : "");
         HOST_LOG(L"LoadLibrary %S -> fake 0x%llx", path ? path : "(null)", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)));
         return handle;
     }
 
-    HMODULE WINAPI Shim_LoadLibraryW(LPCWSTR path)
-    {
-        return Shim_LoadLibraryA(Narrow(path ? path : L"").c_str());
-    }
 
     // Loading a DLL as data (for its resources) has nothing to give back.
     constexpr DWORD kAsData = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE | LOAD_LIBRARY_AS_IMAGE_RESOURCE;
 
-    HMODULE WINAPI Shim_LoadLibraryExA(LPCSTR path, HANDLE, DWORD flags)
+    HMODULE WINAPI Shim_LoadLibraryExW(LPCWSTR path, HANDLE, DWORD flags)
     {
         if (flags & kAsData)
         {
             SetLastError(ERROR_MOD_NOT_FOUND);
             return nullptr;
         }
-        return Shim_LoadLibraryA(path);
+        return Shim_LoadLibraryW(path);
     }
 
-    HMODULE WINAPI Shim_LoadLibraryExW(LPCWSTR path, HANDLE file, DWORD flags)
+    HMODULE WINAPI Shim_LoadLibraryExA(LPCSTR path, HANDLE file, DWORD flags)
     {
-        return Shim_LoadLibraryExA(Narrow(path ? path : L"").c_str(), file, flags);
+        return Shim_LoadLibraryExW(Widen(path ? path : "").c_str(), file, flags);
     }
 
+    // Game DLLs stay mapped (their code may still be on a stack); fake modules have nothing to free.
     BOOL WINAPI Shim_FreeLibrary(HMODULE module)
     {
         std::string dll;
-        return FakeName(module, dll) ? TRUE : FreeLibrary(module);
+        if (FakeName(module, dll) || GameDllContaining(module))
+            return TRUE;
+        return FreeLibrary(module);
     }
 
     [[noreturn]] VOID WINAPI Shim_FreeLibraryAndExitThread(HMODULE module, DWORD code)
@@ -85,6 +102,22 @@ namespace
     FARPROC WINAPI Shim_GetProcAddress(HMODULE module, LPCSTR name)
     {
         std::string dll;
+        if (GameDllContaining(module))
+        {
+            bool ordinalOnly = reinterpret_cast<uintptr_t>(name) < 0x10000;
+            void* fn = GameDllExport(module, ordinalOnly ? nullptr : name,
+                ordinalOnly ? static_cast<uint16_t>(reinterpret_cast<uintptr_t>(name)) : 0);
+            if (!fn)
+            {
+                if (ordinalOnly)
+                    HOST_LOG(L"GetProcAddress %s!#%u -> not exported", GameDllPath(module).filename().c_str(),
+                        static_cast<unsigned>(reinterpret_cast<uintptr_t>(name)));
+                else
+                    HOST_LOG(L"GetProcAddress %s!%S -> not exported", GameDllPath(module).filename().c_str(), name);
+                SetLastError(ERROR_PROC_NOT_FOUND);
+            }
+            return reinterpret_cast<FARPROC>(fn);
+        }
         if (!FakeName(module, dll))
             return GetProcAddress(module, name);
 
@@ -122,6 +155,8 @@ HMODULE FakeModule(const char* dll)
 void RegisterLoader(Win32Layer& layer)
 {
     g_layer = &layer;
+    SetGameDllLayer(layer);
+    layer.Register("kernel32!DisableThreadLibraryCalls", reinterpret_cast<void*>(&GameDllDisableThreadLibraryCalls));
     layer.Register("kernel32!LoadLibraryA", reinterpret_cast<void*>(&Shim_LoadLibraryA));
     layer.Register("kernel32!LoadLibraryW", reinterpret_cast<void*>(&Shim_LoadLibraryW));
     layer.Register("kernel32!GetProcAddress", reinterpret_cast<void*>(&Shim_GetProcAddress));

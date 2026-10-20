@@ -215,6 +215,11 @@ namespace
             auto it = g_windows.find(hwnd);
             if (it != g_windows.end()) proc = it->second.proc;
         }
+        // The messages that end a game, so a quit can be traced to what asked for it.
+        if (message == 0x0002 || message == 0x0010 || message == 0x0011 || message == 0x0016 ||
+            (message == 0x0112 && (wParam & 0xFFF0) == 0xF060))
+            HOST_LOG(L"window %p gets message 0x%04X (wParam 0x%llx)", static_cast<void*>(hwnd), message,
+                static_cast<unsigned long long>(wParam));
         return proc ? proc(hwnd, message, wParam, lParam) : 0;
     }
 
@@ -988,7 +993,8 @@ void RegisterWindow(Win32Layer& layer)
     reg({ "DialogBoxParamW", "DialogBoxIndirectParamW" }, FN(Shim_DialogBoxParamW));
     reg({ "GetDlgItem" }, FN(Shim_GetDlgItem));
     reg({ "SendDlgItemMessageW" }, FN(Shim_SendDlgItemMessageW));
-    reg({ "LoadIconW" }, FN(Shim_LoadIconW));
+    reg({ "LoadIconW", "LoadIconA" }, FN(Shim_LoadIconW));
+    reg({ "WindowFromPoint" }, FN(Shim_GetForegroundWindow)); // the game window covers the screen
     reg({ "LoadCursorA", "LoadCursorW" }, FN(Shim_LoadCursorA));
     reg({ "LoadImageA" }, FN(Shim_LoadImageA));
     reg({ "GetDC", "GetWindowDC" }, FN(Shim_GetDC));

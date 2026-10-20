@@ -134,6 +134,9 @@
     <ClCompile Include="src\loader\Win32GdiPlus.cpp" />
     <ClCompile Include="src\loader\Win32DxgiOutput.cpp" />
     <ClCompile Include="src\loader\Win32MMDevice.cpp" />
+    <ClCompile Include="src\loader\Win32GameDlls.cpp" />
+    <ClCompile Include="src\loader\Win32Legacy.cpp" />
+    <ClCompile Include="src\loader\Win32DSound.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

@@ -310,8 +310,13 @@ namespace
     {
         UINT w = width ? width : (g_display ? g_display->Width() : 0);
         UINT h = height ? height : (g_display ? g_display->Height() : 0);
-        HRESULT hr = g_originalResizeBuffers(self, count, w, h, FlipFormat(format), flags);
-        HOST_LOG(L"game ResizeBuffers %ux%u -> %ux%u: 0x%08x", width, height, w, h, static_cast<unsigned>(hr));
+        // The swapchain is flip model, made for a legacy one: one buffer isn't enough (0 keeps the count),
+        // and mode switching means nothing on a CoreWindow.
+        UINT n = count == 1 ? 2 : count;
+        UINT f = flags & ~static_cast<UINT>(DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH);
+        HRESULT hr = g_originalResizeBuffers(self, n, w, h, FlipFormat(format), f);
+        HOST_LOG(L"game ResizeBuffers %u x %ux%u flags 0x%x -> %u x %ux%u: 0x%08x", count, width, height, flags, n, w, h,
+            static_cast<unsigned>(hr));
         return hr;
     }
 

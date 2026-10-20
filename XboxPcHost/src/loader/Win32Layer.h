@@ -2,6 +2,12 @@
 
 #include "loader/PeImage.h"
 
+#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
+// In WindowsApp.lib, though the app partition's headers don't declare them.
+extern "C" __declspec(dllimport) PVOID WINAPI AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER handler);
+extern "C" __declspec(dllimport) ULONG WINAPI RemoveVectoredExceptionHandler(PVOID handle);
+#endif
+
 // The game's view of Windows: a table of "dll!Name" -> function pointer that
 // the PE loader binds imports against.
 class Win32Layer final : public ImportResolver
@@ -18,6 +24,8 @@ public:
 
     // key is "dll!Name" with the dll already normalized (lowercase, no .dll).
     void Register(const char* key, void* fn);
+    // Whether any shim or pass-through is registered under this (normalized) DLL name.
+    bool HasDll(std::string const& dll) const;
 
     // Test harnesses: a word of the table's own memory nothing writes after startup.
     void* WatchAddress();
@@ -29,7 +37,21 @@ private:
     std::unordered_map<std::string, void*> m_table;
     std::unordered_map<std::string, void*> m_fallbacks;
     std::vector<std::string> m_unresolved;
+    std::set<std::string> m_dlls; // every DLL name a key uses
 };
+
+// DLLs the game ships, mapped like its exe (Win32GameDlls.cpp). A handle is the DLL's base address.
+void SetGameDllLayer(Win32Layer& layer);
+void BeginGameDllLoading(std::filesystem::path const& exeFolder); // before the exe's imports are bound
+void RunDeferredGameDllInits();                                    // on the game thread, before its entry
+HMODULE LoadGameDllByPath(const wchar_t* path, bool& isGameFile);
+void* ResolveFromGameDll(const char* dll, const char* name, uint16_t ordinal);
+void* GameDllExport(HMODULE module, const char* name, uint16_t ordinal);
+HMODULE GameDllNamed(const char* name);
+HMODULE GameDllContaining(const void* p);
+std::filesystem::path GameDllPath(HMODULE module);
+BOOL WINAPI GameDllDisableThreadLibraryCalls(HMODULE module);
+void NotifyGameDlls(DWORD reason); // DLL_THREAD_ATTACH / DLL_THREAD_DETACH
 
 // One per area of the Win32 surface (Win32Kernel.cpp, ...). RegisterPassThrough runs first, so a
 // shim registered by any of the others replaces a pass-through of the same name.
@@ -58,6 +80,9 @@ void SetGameDisplayForGdi(GameDisplay* display);
 // and ExitProcess report. One game runs at a time. Call from the game thread.
 // root is the game's folder (what the game may see); the exe can be anywhere below it.
 void SetGameProcess(void* imageBase, std::filesystem::path const& exe, std::filesystem::path const& root);
+std::filesystem::path GameExePath(); // the running game's exe
+void KeepHostFaultHandlerFirst();    // after a game adds a vectored handler
+void RegisterLegacy(Win32Layer& layer);
 
 // ExitProcess on the game's main thread raises this so Run() can unwind to its
 // handler; the exit code comes from GameExitCode().
@@ -109,11 +134,14 @@ void SetGameD3DFrameTap(std::function<void(const uint32_t* bgra, UINT width, UIN
 
 // The XAudio2 engine winmm's waveOut plays through; null means no audio device.
 void SetGameAudio(IXAudio2* engine);
+IXAudio2* GameAudioEngine(); // null when there is no audio device
+void RegisterDSound(Win32Layer& layer);
 
 // Static TLS for the game's exe (Win32Tls.cpp). Install once after loading, on any thread;
 // every thread that runs game code calls EnterGameThread first (DLL_PROCESS_ATTACH on the
 // game's main thread, DLL_THREAD_ATTACH on the others) and LeaveGameThread when it's done.
 bool InstallGameTls(PeImage const& image, std::wstring& error);
+bool InstallDllTls(PeImage const& image, std::wstring& error); // a game DLL's, while the exe has none
 void EnterGameThread(DWORD reason);
 void LeaveGameThread();
 

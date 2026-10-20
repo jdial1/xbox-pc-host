@@ -4,6 +4,11 @@
 #include "loader/Win32Text.h"
 #include "Log.h"
 
+#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
+// In WindowsApp.lib, though the app partition's headers don't declare it (RwxFault needs it early).
+extern "C" __declspec(dllimport) PVOID WINAPI AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER handler);
+#endif
+
 namespace
 {
     struct GameProcess
@@ -39,24 +44,37 @@ namespace
         return static_cast<DWORD>(n);
     }
 
+    // A game DLL by its file name (with or without a path), else the fake module for that name.
+    HMODULE ModuleNamed(std::string const& name)
+    {
+        std::string file = name.substr(name.find_last_of("\\/") == std::string::npos ? 0 : name.find_last_of("\\/") + 1);
+        if (HMODULE dll = GameDllNamed(file.c_str()))
+            return dll;
+        return FakeModule(name.c_str());
+    }
+
     HMODULE WINAPI Shim_GetModuleHandleW(LPCWSTR name)
     {
-        return name ? FakeModule(Narrow(name).c_str()) : g_process.base;
+        return name ? ModuleNamed(Narrow(name)) : g_process.base;
     }
 
     HMODULE WINAPI Shim_GetModuleHandleA(LPCSTR name)
     {
-        return name ? FakeModule(name) : g_process.base;
+        return name ? ModuleNamed(name) : g_process.base;
     }
 
     DWORD WINAPI Shim_GetModuleFileNameW(HMODULE module, LPWSTR buffer, DWORD size)
     {
-        return IsGameModule(module) ? CopyPath(g_process.exeW, buffer, size) : GetModuleFileNameW(module, buffer, size);
+        if (IsGameModule(module)) return CopyPath(g_process.exeW, buffer, size);
+        if (GameDllContaining(module)) return CopyPath(GameDllPath(module).wstring(), buffer, size);
+        return GetModuleFileNameW(module, buffer, size);
     }
 
     DWORD WINAPI Shim_GetModuleFileNameA(HMODULE module, LPSTR buffer, DWORD size)
     {
-        return IsGameModule(module) ? CopyPath(g_process.exeA, buffer, size) : GetModuleFileNameA(module, buffer, size);
+        if (IsGameModule(module)) return CopyPath(g_process.exeA, buffer, size);
+        if (GameDllContaining(module)) return CopyPath(Narrow(GameDllPath(module).wstring().c_str()), buffer, size);
+        return GetModuleFileNameA(module, buffer, size);
     }
 
     bool InGameImage(const void* p)
@@ -81,6 +99,11 @@ namespace
                 *module = g_process.base;
                 return TRUE;
             }
+            if (HMODULE dll = GameDllContaining(name))
+            {
+                *module = dll;
+                return TRUE;
+            }
             return GetModuleHandleExW(flags, name, module);
         }
         *module = Shim_GetModuleHandleW(name);
@@ -93,6 +116,8 @@ namespace
         HMODULE module = nullptr;
         if (InGameImage(pc))
             module = g_process.base;
+        else if (HMODULE dll = GameDllContaining(pc))
+            module = dll;
         else
             GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                 static_cast<LPCWSTR>(pc), &module);
@@ -100,15 +125,89 @@ namespace
         return module;
     }
 
+    // ---- Read-write-execute memory, emulated (JITs such as Unity's Mono ask for it).
+    // The FromApp forms allow executable pages (the codeGeneration capability) but never writable and
+    // executable at once. An RWX request becomes read-write and its range is remembered; a page flips
+    // to read-execute when code in it runs (an execute fault) and back to read-write when it is
+    // written (a write fault). Faults outside those ranges are left to everyone else.
+    std::mutex g_rwxLock;
+    std::map<uintptr_t, uintptr_t> g_rwx; // begin -> end
+    std::atomic<bool> g_rwxHandler{ false };
+    PVOID g_rwxHandle = nullptr;
+
+    bool InRwx(uintptr_t a)
+    {
+        std::lock_guard lock(g_rwxLock);
+        auto it = g_rwx.upper_bound(a);
+        return it != g_rwx.begin() && a < std::prev(it)->second;
+    }
+
+    LONG CALLBACK RwxFault(EXCEPTION_POINTERS* info)
+    {
+        auto const* r = info->ExceptionRecord;
+        if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2)
+            return EXCEPTION_CONTINUE_SEARCH;
+        ULONG_PTR kind = r->ExceptionInformation[0], at = r->ExceptionInformation[1];
+        if ((kind != 8 && kind != 1) || !InRwx(at))
+            return EXCEPTION_CONTINUE_SEARCH;
+        ULONG old = 0;
+        void* page = reinterpret_cast<void*>(at & ~static_cast<ULONG_PTR>(0xFFF));
+        if (!VirtualProtectFromApp(page, 0x1000, kind == 8 ? PAGE_EXECUTE_READ : PAGE_READWRITE, &old))
+            return EXCEPTION_CONTINUE_SEARCH;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    bool IsRwx(DWORD protect) { return (protect & 0xFF) == PAGE_EXECUTE_READWRITE || (protect & 0xFF) == PAGE_EXECUTE_WRITECOPY; }
+    DWORD WithoutExecute(DWORD protect) { return (protect & ~0xFFu) | PAGE_READWRITE; }
+
+    void RememberRwx(void* p, SIZE_T size)
+    {
+        if (!g_rwxHandler.exchange(true))
+            g_rwxHandle = AddVectoredExceptionHandler(1, RwxFault); // first in line: these faults are expected
+        auto begin = reinterpret_cast<uintptr_t>(p) & ~static_cast<uintptr_t>(0xFFF);
+        auto end = (reinterpret_cast<uintptr_t>(p) + size + 0xFFF) & ~static_cast<uintptr_t>(0xFFF);
+        std::lock_guard lock(g_rwxLock);
+        auto it = g_rwx.upper_bound(begin);
+        if (it != g_rwx.begin() && std::prev(it)->second >= begin)
+        {
+            --it; // extend an overlapping or touching range
+            begin = it->first;
+            end = std::max(end, it->second);
+            g_rwx.erase(it);
+        }
+        g_rwx[begin] = end;
+    }
+
     // The app partition only has the FromApp forms. Executable pages are allowed by the codeGeneration capability.
     LPVOID WINAPI Shim_VirtualAlloc(LPVOID address, SIZE_T size, DWORD type, DWORD protect)
     {
-        return VirtualAllocFromApp(address, size, type, protect);
+        if (!IsRwx(protect))
+            return VirtualAllocFromApp(address, size, type, protect);
+        void* p = VirtualAllocFromApp(address, size, type, WithoutExecute(protect));
+        if (p)
+            RememberRwx(p, size);
+        return p;
     }
 
     BOOL WINAPI Shim_VirtualProtect(LPVOID address, SIZE_T size, DWORD protect, PDWORD old)
     {
-        return VirtualProtectFromApp(address, size, protect, reinterpret_cast<PULONG>(old));
+        if (!IsRwx(protect))
+            return VirtualProtectFromApp(address, size, protect, reinterpret_cast<PULONG>(old));
+        BOOL ok = VirtualProtectFromApp(address, size, WithoutExecute(protect), reinterpret_cast<PULONG>(old));
+        if (ok)
+            RememberRwx(address, size);
+        return ok;
+    }
+
+    // Releasing a region forgets its emulated RWX range, so later memory at those addresses is ordinary.
+    BOOL WINAPI Shim_VirtualFree(LPVOID address, SIZE_T size, DWORD type)
+    {
+        if (type & MEM_RELEASE)
+        {
+            std::lock_guard lock(g_rwxLock);
+            g_rwx.erase(reinterpret_cast<uintptr_t>(address));
+        }
+        return VirtualFree(address, size, type);
     }
 
     // No parent process: nothing inherited, no window placement.
@@ -162,6 +261,7 @@ namespace
     [[noreturn]] VOID WINAPI Shim_ExitProcess(UINT code)
     {
         HOST_LOG(L"ExitProcess(%u)", code);
+        LogGameStack(L"ExitProcess from");
         g_process.exitCode = code;
         if (GetCurrentThreadId() == g_process.mainThread)
             RaiseException(kGameExitException, EXCEPTION_NONCONTINUABLE, 0, nullptr);
@@ -256,6 +356,18 @@ namespace
     }
 }
 
+std::filesystem::path GameExePath() { return g_process.exeW; }
+
+// A game's own vectored handler went in at the head; put the RWX page flipper back in front of it,
+// or a JIT's handler would take an expected execute fault for a crash.
+void KeepHostFaultHandlerFirst()
+{
+    if (!g_rwxHandle)
+        return;
+    RemoveVectoredExceptionHandler(g_rwxHandle);
+    g_rwxHandle = AddVectoredExceptionHandler(1, RwxFault);
+}
+
 void SetGameProcess(void* imageBase, std::filesystem::path const& exe, std::filesystem::path const& root)
 {
     // Not a function-local static: its guard would add a thread_local to the host's TLS block.
@@ -329,6 +441,12 @@ void LogGameStack(const wchar_t* why, const CONTEXT* from)
             HOST_LOG(L"  game+0x%llx", static_cast<unsigned long long>(at - base));
             continue;
         }
+        if (HMODULE dll = GameDllContaining(at))
+        {
+            HOST_LOG(L"  %s+0x%llx", GameDllPath(dll).filename().c_str(),
+                static_cast<unsigned long long>(at - reinterpret_cast<uint8_t*>(dll)));
+            continue;
+        }
         HMODULE module = nullptr;
         wchar_t name[MAX_PATH] = L"?";
         if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -372,6 +490,12 @@ namespace
             if (InGameImage(at))
             {
                 HOST_LOG(L"  game+0x%llx", static_cast<unsigned long long>(at - base));
+                continue;
+            }
+            if (HMODULE dll = GameDllContaining(at))
+            {
+                HOST_LOG(L"  %s+0x%llx", GameDllPath(dll).filename().c_str(),
+                    static_cast<unsigned long long>(at - reinterpret_cast<uint8_t*>(dll)));
                 continue;
             }
             HMODULE module = nullptr;
@@ -630,6 +754,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", RtlUnwind);
     PASS("kernel32", RtlUnwindEx);
     PASS("kernel32", RtlVirtualUnwind);
+    layer.Register("kernel32!VirtualFree", reinterpret_cast<void*>(&Shim_VirtualFree));
     PASS("kernel32", SetEndOfFile);
     PASS("kernel32", SetEnvironmentVariableW);
     PASS("kernel32", SetFileInformationByHandle);
@@ -649,6 +774,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", TryAcquireSRWLockShared);
     PASS("kernel32", WaitForMultipleObjects);
     PASS("kernel32", WaitForSingleObjectEx);
+    PASS("kernel32", WaitForMultipleObjectsEx);
     PASS("kernel32", WaitForThreadpoolTimerCallbacks);
     PASS("kernel32", WakeAllConditionVariable);
     PASS("kernel32", WakeConditionVariable);

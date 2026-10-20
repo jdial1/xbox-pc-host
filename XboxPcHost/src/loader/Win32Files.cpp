@@ -263,6 +263,27 @@ namespace
 
     // The path the game would see, made absolute against its current directory. Not mapped:
     // a path outside the game folder comes back as the game wrote it, as on Windows.
+    DWORD WINAPI Shim_GetFullPathNameW(LPCWSTR name, DWORD size, LPWSTR buffer, LPWSTR* filePart);
+
+    // The W form, then narrowed; filePart points into the caller's buffer as Windows does.
+    DWORD WINAPI Shim_GetFullPathNameA(LPCSTR name, DWORD size, LPSTR buffer, LPSTR* filePart)
+    {
+        wchar_t wide[MAX_PATH * 4];
+        DWORD n = Shim_GetFullPathNameW(name ? Widen(name).c_str() : nullptr, MAX_PATH * 4, wide, nullptr);
+        if (n == 0 || n >= MAX_PATH * 4)
+            return 0;
+        std::string full = Narrow(wide);
+        if (!buffer || size <= full.size())
+            return static_cast<DWORD>(full.size() + 1);
+        memcpy(buffer, full.c_str(), full.size() + 1);
+        if (filePart)
+        {
+            size_t slash = full.find_last_of("\\/");
+            *filePart = slash == std::string::npos || slash + 1 == full.size() ? nullptr : buffer + slash + 1;
+        }
+        return static_cast<DWORD>(full.size());
+    }
+
     DWORD WINAPI Shim_GetFullPathNameW(LPCWSTR name, DWORD size, LPWSTR buffer, LPWSTR* filePart)
     {
         if (!name || !*name)
@@ -438,6 +459,7 @@ void RegisterFiles(Win32Layer& layer)
     SHIM(SetCurrentDirectoryW);
     SHIM(GetCurrentDirectoryW);
     SHIM(GetFullPathNameW);
+    SHIM(GetFullPathNameA);
     SHIM(GetFileAttributesExW);
     SHIM(FindFirstFileExW);
     SHIM(CreateDirectoryExW);

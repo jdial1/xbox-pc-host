@@ -16,6 +16,72 @@ namespace
     {
         return BCryptGenRandom(nullptr, static_cast<PUCHAR>(buffer), length, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
     }
+
+    // ---- The old IPv4 helpers. Winsock returns per-thread buffers; a ring of them stands in (no
+    // thread_local in the host: its TLS block is the game's).
+    std::mutex g_netLock;
+    char g_addrText[16][16];
+    unsigned g_addrNext = 0;
+
+    char* WINAPI Shim_inet_ntoa(in_addr address)
+    {
+        std::lock_guard lock(g_netLock);
+        char* out = g_addrText[g_addrNext++ % 16];
+        if (!inet_ntop(AF_INET, &address, out, 16))
+            strcpy_s(out, 16, "0.0.0.0");
+        return out;
+    }
+
+    unsigned long WINAPI Shim_inet_addr(const char* text)
+    {
+        in_addr a{};
+        if (!text || inet_pton(AF_INET, text, &a) != 1)
+            return INADDR_NONE;
+        return a.s_addr;
+    }
+
+    // A hostent for the name's IPv4 addresses (up to 8), in a ring of 4 so recent results stay valid.
+    struct HostEntry
+    {
+        hostent entry{};
+        char name[256]{};
+        char* aliases[1]{};
+        in_addr addresses[8]{};
+        char* list[9]{};
+    };
+    HostEntry g_hosts[4];
+    unsigned g_hostNext = 0;
+
+    hostent* WINAPI Shim_gethostbyname(const char* name)
+    {
+        addrinfo hints{};
+        hints.ai_family = AF_INET;
+        addrinfo* result = nullptr;
+        if (getaddrinfo(name && *name ? name : "localhost", nullptr, &hints, &result) != 0 || !result)
+        {
+            WSASetLastError(WSAHOST_NOT_FOUND);
+            return nullptr;
+        }
+        std::lock_guard lock(g_netLock);
+        HostEntry& h = g_hosts[g_hostNext++ % 4];
+        h = HostEntry{};
+        strncpy_s(h.name, name ? name : "", _TRUNCATE);
+        int n = 0;
+        for (addrinfo* a = result; a && n < 8; a = a->ai_next)
+            if (a->ai_family == AF_INET)
+            {
+                h.addresses[n] = reinterpret_cast<sockaddr_in*>(a->ai_addr)->sin_addr;
+                h.list[n] = reinterpret_cast<char*>(&h.addresses[n]);
+                ++n;
+            }
+        freeaddrinfo(result);
+        h.entry.h_name = h.name;
+        h.entry.h_aliases = h.aliases;
+        h.entry.h_addrtype = AF_INET;
+        h.entry.h_length = sizeof(in_addr);
+        h.entry.h_addr_list = h.list;
+        return &h.entry;
+    }
 }
 
 // SSPI's entry: a table of the security functions (AcquireCredentialsHandle, InitializeSecurityContext,
@@ -30,6 +96,9 @@ void RegisterNet(Win32Layer& layer)
         layer.Register((std::string(dll) + "!InitSecurityInterfaceA").c_str(), reinterpret_cast<void*>(&InitSecurityInterfaceA));
         layer.Register((std::string(dll) + "!InitSecurityInterfaceW").c_str(), reinterpret_cast<void*>(&InitSecurityInterfaceW));
     }
+    layer.Register("ws2_32!inet_ntoa", reinterpret_cast<void*>(&Shim_inet_ntoa));
+    layer.Register("ws2_32!inet_addr", reinterpret_cast<void*>(&Shim_inet_addr));
+    layer.Register("ws2_32!gethostbyname", reinterpret_cast<void*>(&Shim_gethostbyname));
 #define WINSOCK(fn) layer.Register("ws2_32!" #fn, reinterpret_cast<void*>(&fn))
     WINSOCK(WSAStartup);
     // The rest of Winsock is in the app partition too; servers and LAN games need these.

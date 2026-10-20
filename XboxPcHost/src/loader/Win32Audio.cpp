@@ -37,6 +37,8 @@ namespace
     {
         IXAudio2SourceVoice* voice = nullptr;
         WaveProc callback = nullptr;
+        UINT64 resetAt = 0;    // samples played when waveOutReset last ran; positions count from there
+        UINT32 rate = 0, blockAlign = 0;
         DWORD_PTR instance = 0;
         std::atomic<int> queued{ 0 };
 
@@ -75,8 +77,12 @@ namespace
             return kInvalParam;
         if (deviceId != 0 && deviceId != 0xFFFFFFFF) // device 0 or WAVE_MAPPER
             return kBadDeviceId;
-        if (format->wFormatTag != WAVE_FORMAT_PCM || format->nChannels == 0 || format->nChannels > 2 ||
-            (format->wBitsPerSample != 8 && format->wBitsPerSample != 16))
+        // PCM (8 to 32-bit), IEEE float, or WAVE_FORMAT_EXTENSIBLE of either, up to 8 channels: XAudio2 takes them all.
+        bool tagOk = format->wFormatTag == WAVE_FORMAT_PCM || format->wFormatTag == 3 /* WAVE_FORMAT_IEEE_FLOAT */ ||
+            format->wFormatTag == 0xFFFE /* WAVE_FORMAT_EXTENSIBLE */;
+        bool bitsOk = format->wBitsPerSample == 8 || format->wBitsPerSample == 16 || format->wBitsPerSample == 24 ||
+            format->wBitsPerSample == 32;
+        if (!tagOk || !bitsOk || format->nChannels == 0 || format->nChannels > 8)
             return kBadFormat;
         if (flags & kFormatQuery)
             return kNoError;
@@ -87,6 +93,8 @@ namespace
             device->callback = reinterpret_cast<WaveProc>(callback);
             device->instance = instance;
         }
+        device->rate = format->nSamplesPerSec;
+        device->blockAlign = format->nBlockAlign;
         HRESULT hr = g_engine->CreateSourceVoice(&device->voice, format, 0, XAUDIO2_DEFAULT_FREQ_RATIO, device.get());
         if (FAILED(hr))
         {
@@ -174,9 +182,75 @@ namespace
             return kInvalParam;
         device->voice->Stop();
         device->voice->FlushSourceBuffers();
+        XAUDIO2_VOICE_STATE state{};
+        device->voice->GetState(&state, 0);
+        device->resetAt = state.SamplesPlayed;
         device->voice->Start();
         return kNoError;
     }
+
+    // MMTIME: a type, then the value in that unit. Bytes, samples and milliseconds are what games ask for.
+    struct MmTime
+    {
+        UINT type;
+        DWORD value;
+        DWORD extra;
+    };
+    UINT WINAPI Shim_waveOutGetPosition(void* handle, MmTime* time, UINT size)
+    {
+        Device* device = Find(handle);
+        if (!device || !time || size < sizeof(MmTime))
+            return kInvalParam;
+        XAUDIO2_VOICE_STATE state{};
+        device->voice->GetState(&state, 0);
+        UINT64 samples = state.SamplesPlayed - device->resetAt;
+        switch (time->type)
+        {
+        case 1: time->value = device->rate ? static_cast<DWORD>(samples * 1000 / device->rate) : 0; break; // TIME_MS
+        case 2: time->value = static_cast<DWORD>(samples); break;                                       // TIME_SAMPLES
+        default: time->type = 4; time->value = static_cast<DWORD>(samples * device->blockAlign); break;   // TIME_BYTES
+        }
+        return kNoError;
+    }
+
+    // One stereo output that plays every PCM format.
+    template <typename C> struct WaveOutCaps // WAVEOUTCAPSW / WAVEOUTCAPSA
+    {
+        WORD mid, pid;
+        UINT driverVersion;
+        C name[32];
+        DWORD formats;
+        WORD channels, reserved;
+        DWORD support;
+    };
+    template <typename C> UINT GetCaps(UINT_PTR id, WaveOutCaps<C>* caps, UINT size)
+    {
+        if (!g_engine) return kNoDriver;
+        if (id != 0 && id != static_cast<UINT_PTR>(-1) && !Find(reinterpret_cast<void*>(id))) return kBadDeviceId;
+        if (!caps || size < sizeof(WaveOutCaps<C>)) return kInvalParam;
+        *caps = {};
+        caps->mid = 1;
+        caps->driverVersion = 0x0100;
+        const char* name = "Xbox audio";
+        for (int i = 0; name[i]; ++i) caps->name[i] = static_cast<C>(name[i]);
+        caps->formats = 0xFFFFF;            // every WAVE_FORMAT_xMxx up to 96 kHz
+        caps->channels = 2;
+        caps->support = 0x4 | 0x8 | 0x20;   // WAVECAPS_VOLUME | LRVOLUME | SAMPLEACCURATE
+        return kNoError;
+    }
+    UINT WINAPI Shim_waveOutGetDevCapsW(UINT_PTR id, WaveOutCaps<wchar_t>* caps, UINT size) { return GetCaps(id, caps, size); }
+    UINT WINAPI Shim_waveOutGetDevCapsA(UINT_PTR id, WaveOutCaps<char>* caps, UINT size) { return GetCaps(id, caps, size); }
+
+    UINT WINAPI Shim_waveOutSetVolume(void* handle, DWORD volume)
+    {
+        Device* device = Find(handle);
+        if (device)
+            device->voice->SetVolume(((volume & 0xFFFF) + (volume >> 16)) / (2.0f * 0xFFFF));
+        return kNoError;
+    }
+    UINT WINAPI Shim_waveOutGetVolume(void*, LPDWORD volume) { if (volume) *volume = 0xFFFFFFFF; return kNoError; }
+    UINT WINAPI Shim_waveOutPause(void* handle) { if (Device* d = Find(handle)) d->voice->Stop(); return kNoError; }
+    UINT WINAPI Shim_waveOutRestart(void* handle) { if (Device* d = Find(handle)) d->voice->Start(); return kNoError; }
 
     UINT WINAPI Shim_waveOutGetErrorTextA(UINT error, char* text, UINT size)
     {
@@ -191,6 +265,8 @@ void SetGameAudio(IXAudio2* engine)
 {
     g_engine = engine;
 }
+
+IXAudio2* GameAudioEngine() { return g_engine; }
 
 namespace
 {
@@ -224,6 +300,13 @@ void RegisterAudio(Win32Layer& layer)
     SHIM(waveOutUnprepareHeader);
     SHIM(waveOutWrite);
     SHIM(waveOutReset);
+    SHIM(waveOutGetPosition);
+    SHIM(waveOutGetDevCapsW);
+    SHIM(waveOutGetDevCapsA);
+    SHIM(waveOutSetVolume);
+    SHIM(waveOutGetVolume);
+    SHIM(waveOutPause);
+    SHIM(waveOutRestart);
     SHIM(waveOutGetErrorTextA);
     SHIM(timeGetTime);
     SHIM(timeGetDevCaps);

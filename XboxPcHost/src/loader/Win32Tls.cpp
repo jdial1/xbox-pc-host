@@ -30,8 +30,8 @@ namespace
         const uint8_t* data = nullptr; // the game's initialized TLS bytes
         size_t rawSize = 0;
         size_t totalSize = 0; // raw bytes plus zero fill
-        std::vector<PIMAGE_TLS_CALLBACK> callbacks;
-        void* imageBase = nullptr;
+        std::vector<std::pair<PIMAGE_TLS_CALLBACK, void*>> callbacks; // with the base of the image each belongs to
+        std::wstring owner;   // whose template is in the buffer: the exe's, or one DLL's
     } g_tls;
     size_t g_capacity = 0; // usable bytes from the start of each thread's host block
 
@@ -54,30 +54,37 @@ namespace
 
     void RunCallbacks(DWORD reason)
     {
-        for (auto callback : g_tls.callbacks)
-            callback(g_tls.imageBase, reason, nullptr);
+        for (auto const& [callback, base] : g_tls.callbacks)
+            callback(base, reason, nullptr);
+    }
+
+    // The buffer has to end the host's block and sit right after the marker's padding.
+    bool CheckHostBlock(std::wstring& error)
+    {
+        uint8_t* block = ThisThreadsBlock();
+        size_t lead = block && t_gameTls >= block ? static_cast<size_t>(t_gameTls - block) : SIZE_MAX;
+        if (lead > kGameTlsAlign || HostTlsSize() != lead + kGameTlsBytes)
+        {
+            error = L"the host's TLS block holds more than the game buffer (another thread_local in the host?): buffer at +" +
+                std::to_wstring(lead) + L", block " + std::to_wstring(HostTlsSize()) + L" bytes";
+            return false;
+        }
+        g_capacity = lead + kGameTlsBytes;
+        return true;
     }
 }
 
 bool InstallGameTls(PeImage const& image, std::wstring& error)
 {
     g_tls = {};
-    g_tls.imageBase = image.Base();
-    g_tls.callbacks = image.TlsCallbacks();
+    for (auto cb : image.TlsCallbacks())
+        g_tls.callbacks.emplace_back(cb, image.Base());
     auto const& tls = image.Tls();
     if (!tls.index)
         return true; // no TLS directory: callbacks only, if any
 
-    // The buffer has to end the block and sit right after the marker's padding.
-    uint8_t* block = ThisThreadsBlock();
-    size_t lead = block && t_gameTls >= block ? static_cast<size_t>(t_gameTls - block) : SIZE_MAX;
-    if (lead > kGameTlsAlign || HostTlsSize() != lead + kGameTlsBytes)
-    {
-        error = L"the host's TLS block holds more than the game buffer (another thread_local in the host?): buffer at +" +
-            std::to_wstring(lead) + L", block " + std::to_wstring(HostTlsSize()) + L" bytes";
+    if (!CheckHostBlock(error))
         return false;
-    }
-    g_capacity = lead + kGameTlsBytes;
     if (tls.totalSize > g_capacity)
     {
         error = L"the game's static TLS needs " + std::to_wstring(tls.totalSize) + L" bytes; the host has " +
@@ -87,9 +94,46 @@ bool InstallGameTls(PeImage const& image, std::wstring& error)
     g_tls.data = tls.data;
     g_tls.rawSize = tls.rawSize;
     g_tls.totalSize = tls.totalSize;
+    g_tls.owner = image.Path().filename().wstring();
     *tls.index = _tls_index;
     HOST_LOG(L"static TLS: %zu bytes (%zu initialized), index %lu, %zu callback(s)",
         g_tls.totalSize, g_tls.rawSize, _tls_index, g_tls.callbacks.size());
+    return true;
+}
+
+bool InstallDllTls(PeImage const& image, std::wstring& error)
+{
+    auto const& tls = image.Tls();
+    if (!tls.index)
+        return true;
+    if (g_tls.totalSize)
+    {
+        error = L"the TLS buffer already holds " + g_tls.owner + L"'s; only one image can have static TLS here";
+        return false;
+    }
+    if (!CheckHostBlock(error))
+        return false;
+    if (tls.totalSize > g_capacity)
+    {
+        error = L"needs " + std::to_wstring(tls.totalSize) + L" bytes of static TLS; the host has " + std::to_wstring(g_capacity);
+        return false;
+    }
+    g_tls.data = tls.data;
+    g_tls.rawSize = tls.rawSize;
+    g_tls.totalSize = tls.totalSize;
+    g_tls.owner = image.Path().filename().wstring();
+    *tls.index = _tls_index;
+    // Threads running now get the template on this one only; they had a zeroed block, which is what
+    // most of a template is. Threads the game starts later get a full copy in EnterGameThread.
+    uint8_t* block = ThisThreadsBlock();
+    memcpy(block, g_tls.data, g_tls.rawSize);
+    memset(block + g_tls.rawSize, 0, g_tls.totalSize - g_tls.rawSize);
+    for (auto cb : image.TlsCallbacks())
+    {
+        g_tls.callbacks.emplace_back(cb, image.Base());
+        cb(image.Base(), DLL_PROCESS_ATTACH, nullptr); // before its DllMain, as Windows does
+    }
+    HOST_LOG(L"static TLS for %s: %zu bytes, %zu callback(s)", g_tls.owner.c_str(), g_tls.totalSize, image.TlsCallbacks().size());
     return true;
 }
 
@@ -102,9 +146,12 @@ void EnterGameThread(DWORD reason)
         memset(block + g_tls.rawSize, 0, g_tls.totalSize - g_tls.rawSize);
     }
     RunCallbacks(reason);
+    if (reason == DLL_THREAD_ATTACH)
+        NotifyGameDlls(DLL_THREAD_ATTACH);
 }
 
 void LeaveGameThread()
 {
+    NotifyGameDlls(DLL_THREAD_DETACH);
     RunCallbacks(DLL_THREAD_DETACH);
 }

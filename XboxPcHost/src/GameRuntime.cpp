@@ -227,6 +227,7 @@ namespace
 
             auto image = std::make_unique<PeImage>();
             std::wstring error;
+            BeginGameDllLoading(exe.parent_path());
             if (!image->Load(exe, *m_win32, error))
                 return Fail(error);
             m_win32->LogUnresolved();
@@ -313,6 +314,7 @@ namespace
 
             DWORD exitCode = 0;
             EXCEPTION_RECORD crash{};
+            RunDeferredGameDllInits(); // DllMain of the DLLs the exe imports, as Windows runs them before its entry
             EnterGameThread(DLL_PROCESS_ATTACH);
             bool returned = CallEntry(m_image->EntryPoint(), exitCode, crash);
 

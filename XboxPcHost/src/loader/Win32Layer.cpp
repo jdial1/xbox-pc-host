@@ -75,11 +75,21 @@ Win32Layer::Win32Layer()
     RegisterLocale(*this);
     RegisterCom(*this);
     RegisterGdiPlus(*this);
+    RegisterDSound(*this);
+    RegisterLegacy(*this); // last: replaces pass-throughs of the same names
 }
 
 void Win32Layer::Register(const char* key, void* fn)
 {
     m_table[key] = fn;
+    std::string k = key;
+    m_dlls.insert(k.substr(0, k.find('!')));
+}
+
+bool Win32Layer::HasDll(std::string const& dll) const
+{
+    std::lock_guard lock(m_lock);
+    return m_dlls.count(dll) != 0;
 }
 
 void* Win32Layer::ResolveImport(const char* dll, const char* name, uint16_t ordinal)
@@ -87,11 +97,17 @@ void* Win32Layer::ResolveImport(const char* dll, const char* name, uint16_t ordi
     std::string key = ImportKey(dll, name, ordinal);
 
     // The game can resolve names at run time from any of its threads.
-    std::lock_guard lock(m_lock);
-    auto it = m_table.find(key);
-    if (it != m_table.end())
-        return it->second;
+    {
+        std::lock_guard lock(m_lock);
+        auto it = m_table.find(key);
+        if (it != m_table.end())
+            return it->second;
+    }
+    // A DLL the game ships (mapping it binds its imports through here again, so not under the lock).
+    if (void* fn = ResolveFromGameDll(dll, name, ordinal))
+        return fn;
 
+    std::lock_guard lock(m_lock);
     auto fb = m_fallbacks.find(key);
     if (fb == m_fallbacks.end())
     {

@@ -128,11 +128,16 @@ namespace
     BOOL WINAPI Shim_AreFileApisANSI() { return TRUE; }
     UINT WINAPI Shim_GetOEMCP() { return 437; }
 
-    // Crash handlers the game installs are recorded nowhere; the host's SEH handler reports crashes.
-    PVOID WINAPI Shim_AddVectoredExceptionHandler(ULONG, PVECTORED_EXCEPTION_HANDLER handler)
+    // A game's vectored handlers are real (Mono's turns faults in its JIT code into managed
+    // exceptions); the host's own fault handling stays in front of them.
+    PVOID WINAPI Shim_AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER handler)
     {
-        return reinterpret_cast<PVOID>(handler); // non-null so the game believes it worked
+        PVOID h = AddVectoredExceptionHandler(first, handler);
+        if (first)
+            KeepHostFaultHandlerFirst();
+        return h;
     }
+    ULONG WINAPI Shim_RemoveVectoredExceptionHandler(PVOID handle) { return RemoveVectoredExceptionHandler(handle); }
     LONG WINAPI Shim_UnhandledExceptionFilter(EXCEPTION_POINTERS*) { return EXCEPTION_CONTINUE_SEARCH; }
 
     // The same Windows 10 GetVersionExA reports.
@@ -279,6 +284,7 @@ void RegisterFakes(Win32Layer& layer)
     FAKE("kernel32", Thread32Next, Shim_ToolhelpNone);
     FAKE("kernel32", OpenProcess, Shim_OpenProcess);
     FAKE("kernel32", K32EnumProcessModules, Shim_K32EnumProcessModules);
+    FAKE("psapi", EnumProcessModules, Shim_K32EnumProcessModules);
     FAKE("kernel32", K32GetModuleFileNameExA, Shim_K32GetModuleFileNameExA);
     FAKE("kernel32", HeapValidate, Shim_HeapValidate);
     FAKE("kernel32", AttachConsole, Shim_AttachConsole);
@@ -321,6 +327,7 @@ void RegisterFakes(Win32Layer& layer)
     FAKE("kernel32", AreFileApisANSI, Shim_AreFileApisANSI);
     FAKE("kernel32", GetOEMCP, Shim_GetOEMCP);
     FAKE("kernel32", AddVectoredExceptionHandler, Shim_AddVectoredExceptionHandler);
+    FAKE("kernel32", RemoveVectoredExceptionHandler, Shim_RemoveVectoredExceptionHandler);
     FAKE("kernel32", UnhandledExceptionFilter, Shim_UnhandledExceptionFilter);
     FAKE("kernel32", VerSetConditionMask, Shim_VerSetConditionMask);
     FAKE("kernel32", VerifyVersionInfoW, Shim_VerifyVersionInfoW);
