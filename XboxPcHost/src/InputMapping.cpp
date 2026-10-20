@@ -63,7 +63,8 @@ InputProfile ReadInputProfile(std::filesystem::path const& gameFolder)
     return word == "pointer" ? InputProfile::Pointer : InputProfile::Default;
 }
 
-GameInputFrame MapInput(KeyboardMouseState const& kbm, PadState const& pad, float seconds, InputProfile profile)
+GameInputFrame MapInput(KeyboardMouseState const& kbm, PadState const& pad, float seconds, InputProfile profile,
+    bool padIsNative)
 {
     GameInputFrame frame;
     frame.keys = kbm.keys;
@@ -71,7 +72,15 @@ GameInputFrame MapInput(KeyboardMouseState const& kbm, PadState const& pad, floa
     frame.cursorDx = kbm.mouseDeltaX;
     frame.cursorDy = kbm.mouseDeltaY;
     frame.wheel = kbm.wheel;
-    if (!pad.connected)
+    frame.padConnected = pad.connected;
+    frame.padLeftX = pad.leftX;
+    frame.padLeftY = pad.leftY;
+    frame.padRightX = pad.rightX;
+    frame.padRightY = pad.rightY;
+    frame.padLeftTrigger = pad.leftTrigger;
+    frame.padRightTrigger = pad.rightTrigger;
+    frame.padButtons = pad.buttons;
+    if (!pad.connected || padIsNative)
         return frame;
     if (profile == InputProfile::Pointer)
     {

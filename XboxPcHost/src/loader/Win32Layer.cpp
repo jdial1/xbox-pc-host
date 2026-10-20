@@ -35,11 +35,24 @@ namespace
         }
     }
 
+    // xinput1_3 and xinput1_4 export by these ordinals too; xinput.lib links 1_4 by ordinal.
+    const char* XInputName(uint16_t ordinal)
+    {
+        switch (ordinal)
+        {
+        case 2: return "XInputGetState"; case 3: return "XInputSetState"; case 4: return "XInputGetCapabilities";
+        case 5: return "XInputEnable"; case 7: return "XInputGetBatteryInformation"; case 8: return "XInputGetKeystroke";
+        default: return nullptr; // 100 (XInputGetStateEx) has no name and is registered by ordinal
+        }
+    }
+
     std::string ImportKey(const char* dll, const char* name, uint16_t ordinal)
     {
         std::string key = NormalizeDllName(dll);
         if (!name && key == "ws2_32")
             name = Ws2Name(ordinal);
+        if (!name && key.rfind("xinput", 0) == 0)
+            name = XInputName(ordinal);
         key += '!';
         key += name ? std::string(name) : "#" + std::to_string(ordinal);
         return key;

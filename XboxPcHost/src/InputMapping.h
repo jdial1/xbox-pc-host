@@ -12,5 +12,6 @@ enum class InputProfile
 InputProfile ReadInputProfile(std::filesystem::path const& gameFolder);
 
 // What the game gets to see of the input devices this frame.
+// padIsNative: the game reads the controller itself (XInput), so it only gets the raw pad.
 GameInputFrame MapInput(KeyboardMouseState const& kbm, PadState const& pad, float seconds,
-    InputProfile profile = InputProfile::Default);
+    InputProfile profile = InputProfile::Default, bool padIsNative = false);

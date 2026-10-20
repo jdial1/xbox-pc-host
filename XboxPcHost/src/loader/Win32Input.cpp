@@ -86,9 +86,125 @@ namespace
     }
 }
 
+namespace
+{
+    // ------------------------------------------------------------------ XInput, from the host's pad
+    // Layouts from xinput.h, which the app partition doesn't offer.
+    struct XInputGamepad
+    {
+        WORD buttons;
+        BYTE leftTrigger, rightTrigger;
+        SHORT thumbLX, thumbLY, thumbRX, thumbRY;
+    };
+    struct XInputState
+    {
+        DWORD packetNumber;
+        XInputGamepad gamepad;
+    };
+    struct XInputVibration
+    {
+        WORD leftMotorSpeed, rightMotorSpeed;
+    };
+    struct XInputCapabilities
+    {
+        BYTE type, subType;
+        WORD flags;
+        XInputGamepad gamepad;
+        XInputVibration vibration;
+    };
+    struct XInputBattery
+    {
+        BYTE batteryType, batteryLevel;
+    };
+    static_assert(sizeof(XInputState) == 16 && sizeof(XInputCapabilities) == 20);
+
+    GameInputFrame g_pad;              // the latest frame's raw pad (under g_lock)
+    DWORD g_padPacket = 0;
+    XInputGamepad g_lastReported{};
+    std::atomic<ULONGLONG> g_xinputPolled{ 0 }; // GetTickCount64 of the game's last XInput poll
+
+    SHORT Axis(float v) { return static_cast<SHORT>(std::lround(std::clamp(v, -1.0f, 1.0f) * (v < 0 ? 32768.0f : 32767.0f))); }
+    BYTE Trigger(float v) { return static_cast<BYTE>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); }
+
+    WORD XInputButtons(uint32_t b)
+    {
+        // Windows.Gaming.Input bit -> XINPUT_GAMEPAD_* bit
+        static const std::pair<uint32_t, WORD> map[] = {
+            { 0x0040, 0x0001 }, { 0x0080, 0x0002 }, { 0x0100, 0x0004 }, { 0x0200, 0x0008 }, // d-pad up/down/left/right
+            { 0x0001, 0x0010 }, { 0x0002, 0x0020 },                                       // Menu = START, View = BACK
+            { 0x1000, 0x0040 }, { 0x2000, 0x0080 },                                       // thumbsticks
+            { 0x0400, 0x0100 }, { 0x0800, 0x0200 },                                       // shoulders
+            { 0x0004, 0x1000 }, { 0x0008, 0x2000 }, { 0x0010, 0x4000 }, { 0x0020, 0x8000 }, // A B X Y
+        };
+        WORD w = 0;
+        for (auto const& [from, to] : map)
+            if (b & from) w |= to;
+        return w;
+    }
+
+    constexpr DWORD kNotConnected = ERROR_DEVICE_NOT_CONNECTED;
+
+    DWORD WINAPI Shim_XInputGetState(DWORD user, XInputState* state)
+    {
+        g_xinputPolled = GetTickCount64();
+        std::lock_guard lock(g_lock);
+        if (user != 0 || !g_pad.padConnected)
+            return kNotConnected;
+        XInputGamepad now{ XInputButtons(g_pad.padButtons), Trigger(g_pad.padLeftTrigger), Trigger(g_pad.padRightTrigger),
+            Axis(g_pad.padLeftX), Axis(g_pad.padLeftY), Axis(g_pad.padRightX), Axis(g_pad.padRightY) };
+        if (memcmp(&now, &g_lastReported, sizeof(now)) != 0)
+        {
+            g_lastReported = now;
+            ++g_padPacket; // games skip work when the packet number hasn't moved
+        }
+        state->packetNumber = g_padPacket;
+        state->gamepad = now;
+        return ERROR_SUCCESS;
+    }
+
+    // Rumble isn't wired up yet; accepting it keeps games from treating the pad as broken.
+    DWORD WINAPI Shim_XInputSetState(DWORD user, XInputVibration*)
+    {
+        std::lock_guard lock(g_lock);
+        return user == 0 && g_pad.padConnected ? ERROR_SUCCESS : kNotConnected;
+    }
+
+    DWORD WINAPI Shim_XInputGetCapabilities(DWORD user, DWORD, XInputCapabilities* caps)
+    {
+        std::lock_guard lock(g_lock);
+        if (user != 0 || !g_pad.padConnected)
+            return kNotConnected;
+        *caps = {};
+        caps->type = 1;    // XINPUT_DEVTYPE_GAMEPAD
+        caps->subType = 1; // XINPUT_DEVSUBTYPE_GAMEPAD
+        caps->gamepad = { 0xF3FF, 255, 255, -64, -64, -64, -64 }; // every control present
+        caps->vibration = { 65535, 65535 };
+        return ERROR_SUCCESS;
+    }
+
+    DWORD WINAPI Shim_XInputGetBatteryInformation(DWORD user, BYTE, XInputBattery* battery)
+    {
+        std::lock_guard lock(g_lock);
+        if (user != 0 || !g_pad.padConnected)
+            return kNotConnected;
+        *battery = { 1 /* BATTERY_TYPE_WIRED */, 3 /* BATTERY_LEVEL_FULL */ };
+        return ERROR_SUCCESS;
+    }
+
+    VOID WINAPI Shim_XInputEnable(BOOL) {}
+    DWORD WINAPI Shim_XInputGetKeystroke(DWORD, DWORD, void*) { return ERROR_EMPTY; }
+}
+
+bool GameReadsXInput()
+{
+    ULONGLONG polled = g_xinputPolled;
+    return polled != 0 && GetTickCount64() - polled < 3000;
+}
+
 void FeedGameInput(GameInputFrame const& frame)
 {
     std::lock_guard lock(g_lock);
+    g_pad = frame;
     PlaceCursor();
 
     for (int vk = 1; vk < 256; ++vk)
@@ -128,6 +244,18 @@ void FeedGameInput(GameInputFrame const& frame)
 void RegisterInput(Win32Layer& layer)
 {
     layer.Register("user32!GetKeyState", reinterpret_cast<void*>(&Shim_GetKeyState));
+    // Every XInput DLL name games load: 1.4 (Windows 8+), 1.3 (DirectX SDK), 9.1.0 (Vista).
+    for (const char* dll : { "xinput1_4", "xinput1_3", "xinput9_1_0", "xinputuap" })
+    {
+        std::string d = std::string(dll) + "!";
+        layer.Register((d + "XInputGetState").c_str(), reinterpret_cast<void*>(&Shim_XInputGetState));
+        layer.Register((d + "#100").c_str(), reinterpret_cast<void*>(&Shim_XInputGetState)); // XInputGetStateEx (adds Guide)
+        layer.Register((d + "XInputSetState").c_str(), reinterpret_cast<void*>(&Shim_XInputSetState));
+        layer.Register((d + "XInputGetCapabilities").c_str(), reinterpret_cast<void*>(&Shim_XInputGetCapabilities));
+        layer.Register((d + "XInputGetBatteryInformation").c_str(), reinterpret_cast<void*>(&Shim_XInputGetBatteryInformation));
+        layer.Register((d + "XInputEnable").c_str(), reinterpret_cast<void*>(&Shim_XInputEnable));
+        layer.Register((d + "XInputGetKeystroke").c_str(), reinterpret_cast<void*>(&Shim_XInputGetKeystroke));
+    }
     // Only the high "down now" bit is ever set, which is what both report.
     layer.Register("user32!GetAsyncKeyState", reinterpret_cast<void*>(&Shim_GetKeyState));
     layer.Register("user32!GetCursorPos", reinterpret_cast<void*>(&Shim_GetCursorPos));

@@ -228,7 +228,7 @@ namespace
             auto now = std::chrono::steady_clock::now();
             float seconds = std::min(0.1f, std::chrono::duration<float>(now - m_lastTick).count());
             m_lastTick = now;
-            FeedGameInput(MapInput(m_input->KeyboardMouse(), m_input->Pad(), seconds, m_profile));
+            FeedGameInput(MapInput(m_input->KeyboardMouse(), m_input->Pad(), seconds, m_profile, GameReadsXInput()));
         }
         void Stop() override { DetachGameWindow(); }
         bool IsRunning() const override { return State() == RunState::Running; }
