@@ -362,6 +362,53 @@ unsigned long GameExitCode() { return g_process.exitCode; }
 // kernel32 functions the game can call as they are. Taking the address of each
 // one is what proves it is in the app partition. Left out on purpose: the
 // file, path, process and loader calls, which need the sandbox mapping.
+namespace
+{
+    // Stand-ins for stdout and stderr where the process has none (a UWP app). Small values no real
+    // handle has; what the game writes to them goes to host.log a line at a time.
+    HANDLE const kStdOut = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x00040011));
+    HANDLE const kStdErr = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x00040021));
+    std::mutex g_stdLock;
+    std::string g_stdLine[2];
+
+    bool IsStdStandIn(HANDLE h) { return h == kStdOut || h == kStdErr; }
+
+    HANDLE WINAPI Shim_GetStdHandle(DWORD which)
+    {
+        HANDLE h = GetStdHandle(which);
+        if (h && h != INVALID_HANDLE_VALUE)
+            return h;
+        if (which == STD_OUTPUT_HANDLE) return kStdOut;
+        if (which == STD_ERROR_HANDLE) return kStdErr;
+        return h;
+    }
+
+    BOOL WINAPI Shim_WriteFile(HANDLE file, LPCVOID data, DWORD size, LPDWORD written, LPOVERLAPPED overlapped)
+    {
+        if (!IsStdStandIn(file))
+            return WriteFile(file, data, size, written, overlapped);
+        std::lock_guard lock(g_stdLock);
+        std::string& line = g_stdLine[file == kStdErr];
+        for (DWORD i = 0; i < size; ++i)
+        {
+            char c = static_cast<const char*>(data)[i];
+            if (c == '\n' || line.size() > 4000)
+            {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                HOST_LOG(L"%s: %s", file == kStdErr ? L"stderr" : L"stdout", Widen(line.c_str()).c_str());
+                line.clear();
+            }
+            if (c != '\n')
+                line += c;
+        }
+        if (written) *written = size;
+        return TRUE;
+    }
+
+    DWORD WINAPI Shim_GetFileType(HANDLE file) { return IsStdStandIn(file) ? FILE_TYPE_PIPE : GetFileType(file); }
+    BOOL WINAPI Shim_FlushFileBuffers(HANDLE file) { return IsStdStandIn(file) ? TRUE : FlushFileBuffers(file); }
+}
+
 void RegisterKernel32(Win32Layer& layer)
 {
     size_t count = 0;
@@ -397,7 +444,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", GetLastError);
     PASS("kernel32", GetLocalTime);
     PASS("kernel32", GetProcessHeap);
-    PASS("kernel32", GetStdHandle);
+    layer.Register("kernel32!GetStdHandle", reinterpret_cast<void*>(&Shim_GetStdHandle));
     PASS("kernel32", GetSystemTime);
     PASS("kernel32", GetSystemTimeAsFileTime);
     PASS("kernel32", GlobalAlloc);
@@ -422,7 +469,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", Sleep);
     PASS("kernel32", SystemTimeToFileTime);
     PASS("kernel32", WaitForSingleObject);
-    PASS("kernel32", WriteFile);
+    layer.Register("kernel32!WriteFile", reinterpret_cast<void*>(&Shim_WriteFile));
 
     // Statically linked CRTs (OpenTTD) call these directly; all exist in the app partition.
     PASS("kernel32", AcquireSRWLockExclusive);
@@ -446,7 +493,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", FlsFree);
     PASS("kernel32", FlsGetValue);
     PASS("kernel32", FlsSetValue);
-    PASS("kernel32", FlushFileBuffers);
+    layer.Register("kernel32!FlushFileBuffers", reinterpret_cast<void*>(&Shim_FlushFileBuffers));
     PASS("kernel32", FlushProcessWriteBuffers);
     PASS("kernel32", FormatMessageA);
     PASS("kernel32", FreeEnvironmentStringsW);
@@ -461,7 +508,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", GetFileInformationByHandle);
     PASS("kernel32", GetFileInformationByHandleEx);
     PASS("kernel32", GetFileSizeEx);
-    PASS("kernel32", GetFileType);
+    layer.Register("kernel32!GetFileType", reinterpret_cast<void*>(&Shim_GetFileType));
     PASS("kernel32", GetLocaleInfoA);
     PASS("kernel32", GetLocaleInfoEx);
     PASS("kernel32", GetLocaleInfoW);
