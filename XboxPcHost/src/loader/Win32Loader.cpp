@@ -106,6 +106,8 @@ namespace
     }
 }
 
+void* GameImportTableWatchAddress() { return g_layer ? g_layer->WatchAddress() : nullptr; }
+
 HMODULE FakeModule(const char* dll)
 {
     std::string name = NormalizeDllName(dll);

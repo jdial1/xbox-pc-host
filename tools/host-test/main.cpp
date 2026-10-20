@@ -4,6 +4,7 @@
 //   --inject keys|pad  holds scripted keyboard/mouse or controller input for a moment, then closes the window
 //   --shot file.bmp    saves the last software (GDI) frame when the run ends
 //   --root dir         the game's folder, when the exe is below it (bin\x64\Factorio.exe)
+//   --watch-layer 1    a hardware watchpoint on the import table, in every thread: logs who overwrites it
 //   --script file      timed steps, one per line ("#" starts a comment), seconds from the game's start:
 //                        <s> move <x> <y>   pointer to a window position (WM_MOUSEMOVE)
 //                        <s> click [right]  press and release a button where the pointer is
@@ -26,6 +27,9 @@
 #include <sstream>
 #include <csignal>
 #include <exception>
+#include <set>
+#include <thread>
+#include <tlhelp32.h>
 
 namespace
 {
@@ -63,6 +67,62 @@ namespace
         _set_invalid_parameter_handler([](const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t) {
             LogStack(L"invalid parameter to a CRT function");
         });
+    }
+
+    // --watch-layer: DR0 watches 8 bytes for writes in every thread of the process (armed as threads
+    // appear); the vectored handler logs the writer's stack and lets it carry on.
+    void* g_watchAddress = nullptr;
+    std::atomic<int> g_watchHits{ 0 };
+
+    LONG CALLBACK WatchHit(EXCEPTION_POINTERS* info)
+    {
+        if (info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || !(info->ContextRecord->Dr6 & 1))
+            return EXCEPTION_CONTINUE_SEARCH;
+        info->ContextRecord->Dr6 = 0;
+        if (g_watchHits++ < 8)
+        {
+            HOST_LOG(L"watch: %p now holds %p (thread %lu)", g_watchAddress, *static_cast<void**>(g_watchAddress), GetCurrentThreadId());
+            LogGameStack(L"watch: written by", info->ContextRecord);
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    void ArmWatch(std::stop_token stop)
+    {
+        std::set<DWORD> armed{ GetCurrentThreadId() };
+        while (!stop.stop_requested())
+        {
+            if (!g_watchAddress)
+                g_watchAddress = GameImportTableWatchAddress();
+            if (g_watchAddress)
+            {
+                HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+                THREADENTRY32 te{ sizeof(te) };
+                for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te))
+                {
+                    if (te.th32OwnerProcessID != GetCurrentProcessId() || armed.count(te.th32ThreadID))
+                        continue;
+                    armed.insert(te.th32ThreadID);
+                    HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, te.th32ThreadID);
+                    if (!t) continue;
+                    if (SuspendThread(t) != static_cast<DWORD>(-1))
+                    {
+                        CONTEXT c{};
+                        c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                        if (GetThreadContext(t, &c))
+                        {
+                            c.Dr0 = reinterpret_cast<DWORD64>(g_watchAddress);
+                            c.Dr7 = (c.Dr7 & ~0xF0003ull) | 1 | (1ull << 16) | (2ull << 18); // L0, write, 8 bytes
+                            SetThreadContext(t, &c);
+                        }
+                        ResumeThread(t);
+                    }
+                    CloseHandle(t);
+                }
+                CloseHandle(snap);
+            }
+            Sleep(20);
+        }
     }
 
     // The newest frame the game presented, kept for --shot and the script's "shot".
@@ -244,6 +304,7 @@ int wmain(int argc, wchar_t** argv)
     std::filesystem::path shot;
     std::filesystem::path root; // the game's folder when its exe is below it (default: the exe's folder)
     std::vector<Step> script;
+    bool watchLayer = false;
     int timeout = 20;
     for (int i = 2; i + 1 < argc; i += 2)
     {
@@ -253,6 +314,7 @@ int wmain(int argc, wchar_t** argv)
         else if (wcscmp(argv[i], L"--shot") == 0) shot = argv[i + 1];
         else if (wcscmp(argv[i], L"--root") == 0) root = std::filesystem::absolute(argv[i + 1]);
         else if (wcscmp(argv[i], L"--script") == 0) script = LoadScript(argv[i + 1]);
+        else if (wcscmp(argv[i], L"--watch-layer") == 0) watchLayer = true;
     }
 
     host::log::Init(exe.parent_path() / L"host.log");
@@ -280,6 +342,12 @@ int wmain(int argc, wchar_t** argv)
     });
 
     auto runtime = CreateGameRuntime();
+    std::jthread watcher;
+    if (watchLayer)
+    {
+        AddVectoredExceptionHandler(1, WatchHit);
+        watcher = std::jthread(ArmWatch);
+    }
     runtime->Start(game, services);
     size_t nextStep = 0;
     for (int ms = 0; runtime->IsRunning() && ms < timeout * 1000; ms += 10)

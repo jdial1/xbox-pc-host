@@ -109,6 +109,13 @@ void* Win32Layer::Find(const char* dll, const char* name, uint16_t ordinal) cons
     return it != m_table.end() ? it->second : nullptr;
 }
 
+void* Win32Layer::WatchAddress()
+{
+    // MSVC's unordered_map: a list, then the bucket vector (first, last, end), then the mask.
+    static_assert(sizeof(m_table) == 64, "the layout this assumes");
+    return reinterpret_cast<uint8_t*>(&m_table) + 0x18;
+}
+
 void Win32Layer::LogUnresolved() const
 {
     std::lock_guard lock(m_lock);

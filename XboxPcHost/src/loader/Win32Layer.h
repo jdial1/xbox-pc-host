@@ -19,6 +19,9 @@ public:
     // key is "dll!Name" with the dll already normalized (lowercase, no .dll).
     void Register(const char* key, void* fn);
 
+    // Test harnesses: a word of the table's own memory nothing writes after startup.
+    void* WatchAddress();
+
 private:
     static void* MakeFallback(std::string const& key);
 
@@ -64,6 +67,10 @@ unsigned long GameExitCode();
 // File paths: the game only sees its own folder (see Win32Files.cpp).
 std::filesystem::path MapGamePath(const wchar_t* name);
 void SetGameRoot(std::filesystem::path const& root, std::filesystem::path const& currentDirectory);
+
+// Test harnesses: the address of a word inside the running game's import table that nothing writes
+// after startup (its bucket array pointer), for a hardware watchpoint; null before a game is loaded.
+void* GameImportTableWatchAddress();
 
 // "KERNEL32.DLL" -> "kernel32": the form the "dll!Name" table keys use.
 std::string NormalizeDllName(const char* dll);

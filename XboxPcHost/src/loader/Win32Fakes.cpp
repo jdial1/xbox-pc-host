@@ -229,6 +229,41 @@ namespace
     // error is what the game sees when the user cancels.
     BOOL WINAPI Shim_FileDialog(void*) { return FALSE; }
     DWORD WINAPI Shim_CommDlgExtendedError() { return 0; }
+
+    // HID devices aren't reachable from the app partition; games (SDL's hidapi) see a system with
+    // none, so its setup succeeds once instead of failing on every poll. Pads come through XInput.
+    BOOLEAN WINAPI Shim_HidFalse() { SetLastError(ERROR_INVALID_HANDLE); return FALSE; } // every HidD_ call needs a device
+    void WINAPI Shim_HidGetHidGuid(GUID* guid)
+    {
+        if (guid) *guid = { 0x4D1E55B2, 0xF16F, 0x11CF, { 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } };
+    }
+    LONG WINAPI Shim_HidPInvalid() { return static_cast<LONG>(0xC0110001); } // HIDP_STATUS_INVALID_PREPARSED_DATA
+
+    HANDLE WINAPI Shim_SetupDiGetClassDevs(const GUID*, LPCVOID, HWND, DWORD) { return INVALID_HANDLE_VALUE; }
+    BOOL WINAPI Shim_SetupDiNoMoreItems() { SetLastError(ERROR_NO_MORE_ITEMS); return FALSE; }
+    BOOL WINAPI Shim_SetupDiDestroyDeviceInfoList(HANDLE) { return TRUE; }
+
+    // Notifications are accepted and never fire; device nodes don't exist.
+    DWORD WINAPI Shim_CMRegisterNotification(void*, void*, void*, HANDLE* context)
+    {
+        if (context) *context = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x00030010));
+        return 0; // CR_SUCCESS
+    }
+    DWORD WINAPI Shim_CMSuccess() { return 0; }
+    DWORD WINAPI Shim_CMNoSuchDevnode() { return 0x0D; } // CR_NO_SUCH_DEVNODE
+    DWORD WINAPI Shim_CMEmptyListSize(PULONG size, LPCVOID, LPCVOID, ULONG) { if (size) *size = 1; return 0; }
+    DWORD WINAPI Shim_CMEmptyListW(LPCVOID, LPCVOID, PWSTR buffer, ULONG length, ULONG)
+    {
+        if (!buffer || length < 1) return 0x1A; // CR_BUFFER_SMALL
+        buffer[0] = 0;
+        return 0;
+    }
+    DWORD WINAPI Shim_CMEmptyListA(LPCVOID, LPCVOID, PSTR buffer, ULONG length, ULONG)
+    {
+        if (!buffer || length < 1) return 0x1A;
+        buffer[0] = 0;
+        return 0;
+    }
 }
 
 void RegisterFakes(Win32Layer& layer)
@@ -311,5 +346,35 @@ void RegisterFakes(Win32Layer& layer)
     FAKE("kernel32", AppPolicyGetShowDeveloperDiagnostic, Shim_AppPolicyZero);  // none
     FAKE("kernel32", AppPolicyGetWindowingModel, Shim_AppPolicyZero);           // none
     FAKE("winmm", timeEndPeriod, Shim_TimePeriod);
+    for (const char* fn : { "HidD_GetAttributes", "HidD_GetSerialNumberString", "HidD_GetManufacturerString",
+        "HidD_GetProductString", "HidD_SetFeature", "HidD_GetFeature", "HidD_GetInputReport", "HidD_GetIndexedString",
+        "HidD_GetPreparsedData", "HidD_FreePreparsedData", "HidD_SetNumInputBuffers", "HidD_SetOutputReport",
+        "HidD_GetNumInputBuffers", "HidD_FlushQueue", "HidD_GetPhysicalDescriptor" })
+        layer.Register((std::string("hid!") + fn).c_str(), reinterpret_cast<void*>(&Shim_HidFalse));
+    FAKE("hid", HidD_GetHidGuid, Shim_HidGetHidGuid);
+    // Not HidP_GetButtonCaps, GetValueCaps, GetData or MaxDataListLength: with them SDL starts its raw-input
+    // joystick driver, which then claims XInput pads and finds none (raw input has no devices here).
+    for (const char* fn : { "HidP_GetCaps", "HidP_GetUsages",
+        "HidP_GetUsageValue", "HidP_GetScaledUsageValue", "HidP_GetSpecificButtonCaps", "HidP_GetSpecificValueCaps" })
+        layer.Register((std::string("hid!") + fn).c_str(), reinterpret_cast<void*>(&Shim_HidPInvalid));
+    FAKE("setupapi", SetupDiGetClassDevsA, Shim_SetupDiGetClassDevs);
+    FAKE("setupapi", SetupDiGetClassDevsW, Shim_SetupDiGetClassDevs);
+    for (const char* fn : { "SetupDiEnumDeviceInterfaces", "SetupDiEnumDeviceInfo", "SetupDiGetDeviceInterfaceDetailA",
+        "SetupDiGetDeviceInterfaceDetailW", "SetupDiGetDeviceRegistryPropertyA", "SetupDiGetDeviceRegistryPropertyW" })
+        layer.Register((std::string("setupapi!") + fn).c_str(), reinterpret_cast<void*>(&Shim_SetupDiNoMoreItems));
+    FAKE("setupapi", SetupDiDestroyDeviceInfoList, Shim_SetupDiDestroyDeviceInfoList);
+    for (const char* dll : { "cfgmgr32", "setupapi" })
+    {
+        std::string d = std::string(dll) + "!";
+        layer.Register((d + "CM_Register_Notification").c_str(), reinterpret_cast<void*>(&Shim_CMRegisterNotification));
+        layer.Register((d + "CM_Unregister_Notification").c_str(), reinterpret_cast<void*>(&Shim_CMSuccess));
+        for (const char* fn : { "CM_Locate_DevNodeA", "CM_Locate_DevNodeW", "CM_Get_Parent", "CM_Get_Device_IDA",
+            "CM_Get_Device_IDW", "CM_Get_DevNode_PropertyW", "CM_Get_Device_Interface_PropertyW" })
+            layer.Register((d + fn).c_str(), reinterpret_cast<void*>(&Shim_CMNoSuchDevnode));
+        layer.Register((d + "CM_Get_Device_Interface_List_SizeW").c_str(), reinterpret_cast<void*>(&Shim_CMEmptyListSize));
+        layer.Register((d + "CM_Get_Device_Interface_List_SizeA").c_str(), reinterpret_cast<void*>(&Shim_CMEmptyListSize));
+        layer.Register((d + "CM_Get_Device_Interface_ListW").c_str(), reinterpret_cast<void*>(&Shim_CMEmptyListW));
+        layer.Register((d + "CM_Get_Device_Interface_ListA").c_str(), reinterpret_cast<void*>(&Shim_CMEmptyListA));
+    }
 #undef FAKE
 }

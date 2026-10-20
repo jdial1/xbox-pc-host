@@ -180,9 +180,14 @@ namespace
         {
             if (m_thread)
             {
-                // Can't stop game code safely; keep its image mapped for good.
+                // Can't stop game code safely; keep its image mapped for good, and what its threads
+                // still call into: the import table (GetProcAddress) and the screen the shims report.
                 if (State() == RunState::Running || m_leakImage)
+                {
                     (void)m_image.release();
+                    (void)m_win32.release();
+                    (void)m_screen.release();
+                }
                 CloseHandle(m_thread);
             }
         }
@@ -200,6 +205,8 @@ namespace
             m_input = &host.input;
             SetGameAudio(host.audio.Engine()); // null when the console has no audio, which waveOut reports as no driver
             m_lastTick = std::chrono::steady_clock::now();
+            if (m_leakImage)
+                (void)m_screen.release(); // the last game's threads may still ask it for sizes
             m_screen = std::make_unique<GraphicsDisplay>(host.graphics);
             SetGameDisplay(m_screen.get());
             AttachGameWindow(CurrentCoreWindow());
@@ -220,9 +227,9 @@ namespace
 
             auto image = std::make_unique<PeImage>();
             std::wstring error;
-            if (!image->Load(exe, m_win32, error))
+            if (!image->Load(exe, *m_win32, error))
                 return Fail(error);
-            m_win32.LogUnresolved();
+            m_win32->LogUnresolved();
             if (!image->EntryPoint() || image->IsDll())
                 return Fail(L"not an exe with an entry point");
             if (!InstallGameTls(*image, error))
@@ -370,7 +377,7 @@ namespace
         InputProfile m_profile = InputProfile::Default;
         fs::path m_root; // the game's folder: its exe is somewhere below it
         std::chrono::steady_clock::time_point m_lastTick;
-        Win32Layer m_win32;
+        std::unique_ptr<Win32Layer> m_win32 = std::make_unique<Win32Layer>(); // released, not freed, while game code runs
         std::unique_ptr<PeImage> m_image;
         HANDLE m_thread = nullptr;
         bool m_leakImage = false; // game threads outlived the game
