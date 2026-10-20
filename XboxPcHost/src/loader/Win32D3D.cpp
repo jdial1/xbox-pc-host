@@ -37,6 +37,27 @@ namespace
     std::atomic<bool> g_presented{ false };
     std::atomic<ULONGLONG> g_firstPresent{ 0 }, g_lastPresent{ 0 }; // frame-gap log (file scope: no TLS guard)
     std::atomic<int> g_gapsLogged{ 0 };
+    std::atomic<bool> g_watchdogStarted{ false };
+
+    // Samples every game thread's stack when no frame has come for 400 ms, once per stall, 6 stalls at most,
+    // starting 2 minutes after the first frame (loading has long gaps of its own).
+    DWORD WINAPI StallWatchdog(LPVOID)
+    {
+        int reports = 0;
+        ULONGLONG reported = 0;
+        while (reports < 6)
+        {
+            Sleep(100);
+            ULONGLONG last = g_lastPresent, now = GetTickCount64();
+            if (last && now - last > 400 && reported != last && now - g_firstPresent > 120000)
+            {
+                reported = last;
+                ++reports;
+                LogGameThreadStacks(L"stall (no frame for 400 ms)");
+            }
+        }
+        return 0;
+    }
 
     using CreateSwapChainFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
     using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
@@ -265,6 +286,9 @@ namespace
             // Hitches: a frame that took more than 100 ms since the last one.
             ULONGLONG now = GetTickCount64(), prev = g_lastPresent.exchange(now);
             if (!g_firstPresent) g_firstPresent = now;
+            if (!g_watchdogStarted.exchange(true))
+                if (HANDLE t = CreateThread(nullptr, 0, &StallWatchdog, nullptr, 0, nullptr))
+                    CloseHandle(t);
             if (prev && now - prev > 100 && g_gapsLogged++ < 200)
                 HOST_LOG(L"frame gap %llu ms at %.1f s", now - prev, (now - g_firstPresent) / 1000.0);
         }

@@ -121,6 +121,9 @@ void LeaveGameThread();
 // toolsesolve_game_offsets.py and the game's pdb), module+offset for everything else.
 void LogGameStack(const wchar_t* why, const CONTEXT* from = nullptr); // from: a fault's context, else the caller's
 
+// Logs where every game thread is right now (each suspended briefly): for stalls.
+void LogGameThreadStacks(const wchar_t* why);
+
 // How many threads the game started are still running, after waiting up to waitMs for each.
 // Their code lives in the game's image, so the image can't be unmapped while any run.
 size_t GameThreadsAlive(DWORD waitMs);

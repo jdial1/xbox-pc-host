@@ -148,7 +148,8 @@ namespace
         if (!thread)
             delete context;
         HANDLE copy = nullptr;
-        if (thread && DuplicateHandle(GetCurrentProcess(), thread, GetCurrentProcess(), &copy, SYNCHRONIZE, FALSE, 0))
+        constexpr DWORD kAccess = SYNCHRONIZE | THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION;
+        if (thread && DuplicateHandle(GetCurrentProcess(), thread, GetCurrentProcess(), &copy, kAccess, FALSE, 0))
         {
             std::lock_guard lock(g_threadLock);
             g_threads.push_back(copy);
@@ -336,6 +337,84 @@ void LogGameStack(const wchar_t* why, const CONTEXT* from)
         HOST_LOG(L"  %s+0x%llx", std::filesystem::path(name).filename().c_str(),
             static_cast<unsigned long long>(module ? at - reinterpret_cast<uint8_t*>(module) : reinterpret_cast<uintptr_t>(at)));
     }
+}
+
+namespace
+{
+    // Unwinds from a context into frames, without allocating or locking (the thread may be suspended).
+    USHORT WalkFrames(CONTEXT context, void** frames, USHORT max)
+    {
+        USHORT count = 0;
+        while (count < max && context.Rip)
+        {
+            frames[count++] = reinterpret_cast<void*>(context.Rip);
+            DWORD64 imageBase = 0;
+            PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr);
+            if (!function)
+            {
+                context.Rip = *reinterpret_cast<DWORD64*>(context.Rsp);
+                context.Rsp += 8;
+                continue;
+            }
+            void* handlerData = nullptr;
+            DWORD64 establisher = 0;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip, function, &context, &handlerData, &establisher, nullptr);
+        }
+        return count;
+    }
+
+    void LogFrames(void* const* frames, USHORT count)
+    {
+        auto base = reinterpret_cast<uint8_t*>(g_process.base);
+        for (USHORT i = 0; i < count; ++i)
+        {
+            auto at = static_cast<uint8_t*>(frames[i]);
+            if (InGameImage(at))
+            {
+                HOST_LOG(L"  game+0x%llx", static_cast<unsigned long long>(at - base));
+                continue;
+            }
+            HMODULE module = nullptr;
+            wchar_t name[MAX_PATH] = L"?";
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCWSTR>(at), &module))
+                GetModuleFileNameW(module, name, MAX_PATH);
+            HOST_LOG(L"  %s+0x%llx", std::filesystem::path(name).filename().c_str(),
+                static_cast<unsigned long long>(module ? at - reinterpret_cast<uint8_t*>(module) : reinterpret_cast<uintptr_t>(at)));
+        }
+    }
+}
+
+void LogGameThreadStacks(const wchar_t* why)
+{
+    std::vector<HANDLE> threads;
+    {
+        std::lock_guard lock(g_threadLock);
+        for (HANDLE t : g_threads)
+            if (t) threads.push_back(t);
+    }
+    HANDLE main = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE,
+        g_process.mainThread);
+    if (main) threads.insert(threads.begin(), main);
+    HOST_LOG(L"%s: %zu game threads", why, threads.size());
+    for (HANDLE t : threads)
+    {
+        if (WaitForSingleObject(t, 0) == WAIT_OBJECT_0 || GetThreadId(t) == GetCurrentThreadId())
+            continue;
+        void* frames[32];
+        USHORT count = 0;
+        if (SuspendThread(t) != static_cast<DWORD>(-1))
+        {
+            CONTEXT c{};
+            c.ContextFlags = CONTEXT_FULL;
+            if (GetThreadContext(t, &c))
+                count = WalkFrames(c, frames, 32);
+            ResumeThread(t);
+        }
+        HOST_LOG(L"thread %lu%s:", GetThreadId(t), t == main ? L" (main)" : L"");
+        LogFrames(frames, count);
+    }
+    if (main) CloseHandle(main);
 }
 
 size_t GameThreadsAlive(DWORD waitMs)
