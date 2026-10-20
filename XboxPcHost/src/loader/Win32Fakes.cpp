@@ -289,6 +289,8 @@ void RegisterFakes(Win32Layer& layer)
     FAKE("kernel32", UnhandledExceptionFilter, Shim_UnhandledExceptionFilter);
     FAKE("kernel32", VerSetConditionMask, Shim_VerSetConditionMask);
     FAKE("kernel32", VerifyVersionInfoW, Shim_VerifyVersionInfoW);
+    // The A struct only differs after szCSDVersion; the build number the shim reads is at the same offset.
+    FAKE("kernel32", VerifyVersionInfoA, Shim_VerifyVersionInfoW);
     FAKE("kernel32", TerminateThread, Shim_TerminateThread);
     FAKE("kernel32", VirtualQueryEx, Shim_VirtualQueryEx);
     FAKE("winmm", timeBeginPeriod, Shim_TimePeriod);

@@ -18,8 +18,18 @@ namespace
     }
 }
 
+// SSPI's entry: a table of the security functions (AcquireCredentialsHandle, InitializeSecurityContext,
+// EncryptMessage, ...), all real ones. WindowsApp.lib exports it; only the desktop headers declare it.
+extern "C" __declspec(dllimport) void* __stdcall InitSecurityInterfaceA();
+extern "C" __declspec(dllimport) void* __stdcall InitSecurityInterfaceW();
+
 void RegisterNet(Win32Layer& layer)
 {
+    for (const char* dll : { "secur32", "security", "sspicli" })
+    {
+        layer.Register((std::string(dll) + "!InitSecurityInterfaceA").c_str(), reinterpret_cast<void*>(&InitSecurityInterfaceA));
+        layer.Register((std::string(dll) + "!InitSecurityInterfaceW").c_str(), reinterpret_cast<void*>(&InitSecurityInterfaceW));
+    }
 #define WINSOCK(fn) layer.Register("ws2_32!" #fn, reinterpret_cast<void*>(&fn))
     WINSOCK(WSAStartup);
     // The rest of Winsock is in the app partition too; servers and LAN games need these.

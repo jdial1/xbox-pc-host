@@ -166,6 +166,8 @@ namespace
         {
             g_lastReported = now;
             ++g_padPacket; // games skip work when the packet number hasn't moved
+            if (g_padPacket <= 64) // enough to see a game read the first presses
+                HOST_LOG(L"XInput user %lu: buttons 0x%04X left %d,%d", user, now.buttons, now.thumbLX, now.thumbLY);
         }
         state->packetNumber = g_padPacket;
         state->gamepad = now;
@@ -205,15 +207,118 @@ namespace
     DWORD WINAPI Shim_XInputGetKeystroke(DWORD, DWORD, void*) { return ERROR_EMPTY; }
 }
 
+namespace
+{
+    // A US keyboard's set-1 scan codes by virtual key; "extended" keys come with an E0 prefix.
+    struct ScanCode
+    {
+        BYTE vk, scan;
+        bool extended;
+    };
+    constexpr ScanCode kScanCodes[] = {
+        { 0x1B, 0x01, false }, { '1', 0x02, false }, { '2', 0x03, false }, { '3', 0x04, false }, { '4', 0x05, false },
+        { '5', 0x06, false }, { '6', 0x07, false }, { '7', 0x08, false }, { '8', 0x09, false }, { '9', 0x0A, false },
+        { '0', 0x0B, false }, { 0xBD, 0x0C, false }, { 0xBB, 0x0D, false }, { 0x08, 0x0E, false }, { 0x09, 0x0F, false },
+        { 'Q', 0x10, false }, { 'W', 0x11, false }, { 'E', 0x12, false }, { 'R', 0x13, false }, { 'T', 0x14, false },
+        { 'Y', 0x15, false }, { 'U', 0x16, false }, { 'I', 0x17, false }, { 'O', 0x18, false }, { 'P', 0x19, false },
+        { 0xDB, 0x1A, false }, { 0xDD, 0x1B, false }, { 0x0D, 0x1C, false }, { 0xA2, 0x1D, false }, { 0x11, 0x1D, false },
+        { 'A', 0x1E, false }, { 'S', 0x1F, false }, { 'D', 0x20, false }, { 'F', 0x21, false }, { 'G', 0x22, false },
+        { 'H', 0x23, false }, { 'J', 0x24, false }, { 'K', 0x25, false }, { 'L', 0x26, false }, { 0xBA, 0x27, false },
+        { 0xDE, 0x28, false }, { 0xC0, 0x29, false }, { 0xA0, 0x2A, false }, { 0x10, 0x2A, false }, { 0xDC, 0x2B, false },
+        { 'Z', 0x2C, false }, { 'X', 0x2D, false }, { 'C', 0x2E, false }, { 'V', 0x2F, false }, { 'B', 0x30, false },
+        { 'N', 0x31, false }, { 'M', 0x32, false }, { 0xBC, 0x33, false }, { 0xBE, 0x34, false }, { 0xBF, 0x35, false },
+        { 0xA1, 0x36, false }, { 0x6A, 0x37, false }, { 0xA4, 0x38, false }, { 0x12, 0x38, false }, { 0x20, 0x39, false },
+        { 0x14, 0x3A, false }, { 0x70, 0x3B, false }, { 0x71, 0x3C, false }, { 0x72, 0x3D, false }, { 0x73, 0x3E, false },
+        { 0x74, 0x3F, false }, { 0x75, 0x40, false }, { 0x76, 0x41, false }, { 0x77, 0x42, false }, { 0x78, 0x43, false },
+        { 0x79, 0x44, false }, { 0x13, 0x45, false }, { 0x91, 0x46, false }, { 0x67, 0x47, false }, { 0x68, 0x48, false },
+        { 0x69, 0x49, false }, { 0x6D, 0x4A, false }, { 0x64, 0x4B, false }, { 0x65, 0x4C, false }, { 0x66, 0x4D, false },
+        { 0x6B, 0x4E, false }, { 0x61, 0x4F, false }, { 0x62, 0x50, false }, { 0x63, 0x51, false }, { 0x60, 0x52, false },
+        { 0x6E, 0x53, false }, { 0xE2, 0x56, false }, { 0x7A, 0x57, false }, { 0x7B, 0x58, false },
+        { 0xA3, 0x1D, true }, { 0xA5, 0x38, true }, { 0x6F, 0x35, true }, { 0x2C, 0x37, true }, { 0x90, 0x45, true },
+        { 0x24, 0x47, true }, { 0x26, 0x48, true }, { 0x21, 0x49, true }, { 0x25, 0x4B, true }, { 0x27, 0x4D, true },
+        { 0x23, 0x4F, true }, { 0x28, 0x50, true }, { 0x22, 0x51, true }, { 0x2D, 0x52, true }, { 0x2E, 0x53, true },
+        { 0x5B, 0x5B, true }, { 0x5C, 0x5C, true }, { 0x5D, 0x5D, true },
+    };
+}
+
+UINT VirtualKeyToScanCode(UINT vk, bool* extended)
+{
+    for (auto const& k : kScanCodes)
+        if (k.vk == vk)
+        {
+            if (extended) *extended = k.extended;
+            return k.scan;
+        }
+    if (extended) *extended = false;
+    return 0;
+}
+
+// The first match is the generic key (VK_SHIFT) unless left and right are asked for.
+UINT ScanCodeToVirtualKey(UINT scan, bool extended, bool leftRight)
+{
+    for (auto const& k : kScanCodes)
+    {
+        if (k.scan != scan || k.extended != extended)
+            continue;
+        bool sided = k.vk >= 0xA0 && k.vk <= 0xA5;
+        bool generic = k.vk == 0x10 || k.vk == 0x11 || k.vk == 0x12;
+        if ((leftRight && generic) || (!leftRight && sided))
+            continue;
+        return k.vk;
+    }
+    return 0;
+}
+
+LPARAM KeyMessageLParam(UINT vk, bool down)
+{
+    bool extended = false;
+    UINT scan = VirtualKeyToScanCode(vk, &extended);
+    LPARAM lParam = 1 | (static_cast<LPARAM>(scan) << 16) | (extended ? (1 << 24) : 0); // repeat count 1
+    if (!down)
+        lParam |= 0xC0000000; // was down, being released
+    return lParam;
+}
+
 bool GameReadsXInput()
 {
     ULONGLONG polled = g_xinputPolled;
     return polled != 0 && GetTickCount64() - polled < 3000;
 }
 
+namespace
+{
+    // WM_DEVICECHANGE's lParam for a device interface arriving or leaving: an XInput pad's HID
+    // interface ("IG_" marks XInput devices). Posted, so it has to outlive the call.
+    struct DeviceInterfaceBroadcast
+    {
+        DWORD size, deviceType, reserved;
+        GUID classGuid;
+        wchar_t name[128];
+    };
+    const DeviceInterfaceBroadcast kPadInterface = { sizeof(DeviceInterfaceBroadcast), 5 /* DBT_DEVTYP_DEVICEINTERFACE */, 0,
+        { 0x4D1E55B2, 0xF16F, 0x11CF, { 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } }, // GUID_DEVINTERFACE_HID
+        L"\\\\?\\HID#VID_045E&PID_02FF&IG_00#0&0&0&0#{4d1e55b2-f16f-11cf-88cb-001111000030}" };
+    bool g_padWasConnected = false;
+
+    // Games that enumerate controllers (SDL) look again when Windows says devices changed.
+    void AnnouncePad(bool connected)
+    {
+        constexpr UINT kWmDeviceChange = 0x0219;
+        BroadcastGameMessage(kWmDeviceChange, connected ? 0x8000 /* DBT_DEVICEARRIVAL */ : 0x8004 /* DBT_DEVICEREMOVECOMPLETE */,
+            reinterpret_cast<LPARAM>(&kPadInterface));
+        BroadcastGameMessage(kWmDeviceChange, 0x0007 /* DBT_DEVNODES_CHANGED */, 0);
+        HOST_LOG(L"controller %s", connected ? L"connected" : L"disconnected");
+    }
+}
+
 void FeedGameInput(GameInputFrame const& frame)
 {
     std::lock_guard lock(g_lock);
+    if (frame.padConnected != g_padWasConnected)
+    {
+        g_padWasConnected = frame.padConnected;
+        AnnouncePad(frame.padConnected);
+    }
     g_pad = frame;
     PlaceCursor();
 
@@ -222,8 +327,8 @@ void FeedGameInput(GameInputFrame const& frame)
         if (frame.keys[vk] == g_state.keys[vk])
             continue;
         g_state.keys[vk] = frame.keys[vk];
-        // lParam: repeat count 1; the scan code and flags stay 0.
-        PostGameMessage(frame.keys[vk] ? kWmKeyDown : kWmKeyUp, static_cast<WPARAM>(vk), frame.keys[vk] ? 1 : 0xC0000001);
+        // lParam: repeat count 1 and the key's scan code, which SDL reads the key from.
+        PostGameMessage(frame.keys[vk] ? kWmKeyDown : kWmKeyUp, static_cast<WPARAM>(vk), KeyMessageLParam(vk, frame.keys[vk]));
     }
 
     if (frame.cursorDx != 0 || frame.cursorDy != 0)

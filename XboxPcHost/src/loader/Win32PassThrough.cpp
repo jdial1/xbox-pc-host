@@ -13,6 +13,8 @@
 #include <roapi.h>
 #include <winstring.h>
 #include <roerrorapi.h>
+#define SECURITY_WIN32
+#include <sspi.h>
 #include "loader/Win32Layer.h"
 
 // Imports that exist in the app partition as they are: the game gets the real function.

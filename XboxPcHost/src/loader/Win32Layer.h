@@ -44,6 +44,9 @@ void RegisterNet(Win32Layer& layer);
 void RegisterLocale(Win32Layer& layer);
 void RegisterCom(Win32Layer& layer);
 void RegisterGdiPlus(Win32Layer& layer);
+// WASAPI's MMDeviceEnumerator, which CoCreateInstance hands out (Win32MMDevice.cpp).
+bool IsMMDeviceEnumerator(REFCLSID clsid);
+HRESULT CreateMMDeviceEnumerator(REFIID iid, void** out);
 class GameDisplay;
 void SetGameDisplayForD3D(GameDisplay* display);
 void SetGameDisplayForGdi(GameDisplay* display);
@@ -79,6 +82,11 @@ void DetachGameWindow();
 
 // Window state the input and window shims share.
 void PostGameMessage(UINT message, WPARAM wParam, LPARAM lParam);
+// A US keyboard's scan codes (Win32Input.cpp), and a WM_KEYDOWN/WM_KEYUP lParam carrying one.
+UINT VirtualKeyToScanCode(UINT vk, bool* extended = nullptr);
+UINT ScanCodeToVirtualKey(UINT scan, bool extended, bool leftRight);
+LPARAM KeyMessageLParam(UINT vk, bool down);
+void BroadcastGameMessage(UINT message, WPARAM wParam, LPARAM lParam); // to every window the game made
 UINT GameScreenWidth();
 UINT GameScreenHeight();
 HDC GameWindowDc(); // what the game's GetDC(hwnd) returns

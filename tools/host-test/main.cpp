@@ -11,6 +11,9 @@
 //                        <s> text <words>   type the rest of the line (key down, WM_CHAR, key up each)
 //                        <s> shot <file>    save the newest frame as a BMP
 //                        <s> close          send WM_CLOSE
+//                        <s> pad <A+B|none> hold controller buttons (A B X Y LB RB Menu View Up Down Left Right LS RS)
+//                        <s> stick <x> <y>  left stick, -1..1 (y up); rstick for the right one
+//                        <s> trigger <l> <r> triggers, 0..1
 // Exit code: 0 ok, 1 usage or load failure, 2 expectation not met, 3 timeout.
 #include "pch.h"
 #include "GameRuntime.h"
@@ -135,6 +138,36 @@ namespace
         kWmLButtonUp = 0x0202, kWmRButtonDown = 0x0204, kWmRButtonUp = 0x0205, kWmClose = 0x0010;
     int g_pointerX = 0, g_pointerY = 0;
 
+    // The controller as the script holds it; applied to the input every tick once a pad step ran.
+    PadState g_scriptPad;
+    bool g_scriptPadOn = false;
+
+    uint32_t PadButtons(std::wstring const& names)
+    {
+        using B = winrt::Windows::Gaming::Input::GamepadButtons;
+        static const std::pair<const wchar_t*, B> kNames[] = { { L"a", B::A }, { L"b", B::B }, { L"x", B::X }, { L"y", B::Y },
+            { L"lb", B::LeftShoulder }, { L"rb", B::RightShoulder }, { L"menu", B::Menu }, { L"start", B::Menu },
+            { L"view", B::View }, { L"back", B::View }, { L"up", B::DPadUp }, { L"down", B::DPadDown },
+            { L"left", B::DPadLeft }, { L"right", B::DPadRight }, { L"ls", B::LeftThumbstick }, { L"rs", B::RightThumbstick } };
+        uint32_t bits = 0;
+        std::wistringstream parts(names);
+        std::wstring part;
+        while (std::getline(parts, part, L'+'))
+        {
+            std::transform(part.begin(), part.end(), part.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+            bool known = part == L"none";
+            for (auto const& [name, bit] : kNames)
+                if (part == name)
+                {
+                    bits |= static_cast<uint32_t>(bit);
+                    known = true;
+                }
+            if (!known)
+                fwprintf(stderr, L"script: unknown button %s\n", part.c_str());
+        }
+        return bits;
+    }
+
     void RunStep(Step const& step)
     {
         LPARAM at = MAKELPARAM(g_pointerX, g_pointerY);
@@ -153,8 +186,8 @@ namespace
         else if (step.action == L"key")
         {
             auto vk = static_cast<WPARAM>(wcstoul(step.a.c_str(), nullptr, 0));
-            PostGameMessage(kWmKeyDown, vk, 1);
-            PostGameMessage(kWmKeyUp, vk, 0xC0000001);
+            PostGameMessage(kWmKeyDown, vk, KeyMessageLParam(static_cast<UINT>(vk), true));
+            PostGameMessage(kWmKeyUp, vk, KeyMessageLParam(static_cast<UINT>(vk), false));
         }
         else if (step.action == L"text")
         {
@@ -162,15 +195,35 @@ namespace
             for (wchar_t c : step.a)
             {
                 auto vk = static_cast<WPARAM>(std::iswalnum(c) || c == L' ' ? std::towupper(c) : 0);
-                if (vk) PostGameMessage(kWmKeyDown, vk, 1);
+                if (vk) PostGameMessage(kWmKeyDown, vk, KeyMessageLParam(static_cast<UINT>(vk), true));
                 PostGameMessage(0x0102 /* WM_CHAR */, c, 1);
-                if (vk) PostGameMessage(kWmKeyUp, vk, 0xC0000001);
+                if (vk) PostGameMessage(kWmKeyUp, vk, KeyMessageLParam(static_cast<UINT>(vk), false));
             }
         }
         else if (step.action == L"shot")
             SaveFrame(step.a);
         else if (step.action == L"close")
             PostGameMessage(kWmClose, 0, 0);
+        else if (step.action == L"pad")
+        {
+            uint32_t bits = PadButtons(step.a);
+            g_scriptPad.pressed = bits & ~g_scriptPad.buttons;
+            g_scriptPad.buttons = bits;
+            g_scriptPad.connected = g_scriptPadOn = true;
+        }
+        else if (step.action == L"stick" || step.action == L"rstick")
+        {
+            float x = static_cast<float>(_wtof(step.a.c_str())), y = static_cast<float>(_wtof(step.b.c_str()));
+            (step.action == L"stick" ? g_scriptPad.leftX : g_scriptPad.rightX) = x;
+            (step.action == L"stick" ? g_scriptPad.leftY : g_scriptPad.rightY) = y;
+            g_scriptPad.connected = g_scriptPadOn = true;
+        }
+        else if (step.action == L"trigger")
+        {
+            g_scriptPad.leftTrigger = static_cast<float>(_wtof(step.a.c_str()));
+            g_scriptPad.rightTrigger = static_cast<float>(_wtof(step.b.c_str()));
+            g_scriptPad.connected = g_scriptPadOn = true;
+        }
         else
             fwprintf(stderr, L"script: unknown action %s\n", step.action.c_str());
         HOST_LOG(L"host-test: step %d ms %s %s %s", step.ms, step.action.c_str(), step.a.c_str(), step.b.c_str());
@@ -260,8 +313,11 @@ int wmain(int argc, wchar_t** argv)
 
         while (nextStep < script.size() && script[nextStep].ms <= ms)
             RunStep(script[nextStep++]);
+        if (g_scriptPadOn)
+            pad = g_scriptPad;
 
         runtime->Tick(); // runs what the game asks of the "UI thread", and feeds it input
+        g_scriptPad.pressed = 0; // a press lasts one tick
         Sleep(10);
     }
 

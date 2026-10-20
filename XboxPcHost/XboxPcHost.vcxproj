@@ -133,6 +133,7 @@
     <ClCompile Include="src\loader\Win32Com.cpp" />
     <ClCompile Include="src\loader\Win32GdiPlus.cpp" />
     <ClCompile Include="src\loader\Win32DxgiOutput.cpp" />
+    <ClCompile Include="src\loader\Win32MMDevice.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

@@ -105,8 +105,9 @@ namespace
         kSmCxVirtualScreen = 78, kSmCyVirtualScreen = 79, kSmCMonitors = 80;
     constexpr int kGwlpWndProc = -4, kGwlStyle = -16, kGwlExStyle = -20;
     constexpr UINT kWsPopup = 0x80000000, kWsVisible = 0x10000000;
-    constexpr UINT kWmCreate = 0x0001, kWmDestroy = 0x0002, kWmSize = 0x0005, kWmActivate = 0x0006, kWmClose = 0x0010,
-        kWmNcCreate = 0x0081, kWmNcDestroy = 0x0082, kWmChar = 0x0102;
+    constexpr UINT kWmCreate = 0x0001, kWmDestroy = 0x0002, kWmSize = 0x0005, kWmActivate = 0x0006, kWmSetFocus = 0x0007,
+        kWmKillFocus = 0x0008, kWmClose = 0x0010, kWmActivateApp = 0x001C, kWmNcCreate = 0x0081, kWmNcDestroy = 0x0082,
+        kWmChar = 0x0102;
     HWND const kHwndMessage = reinterpret_cast<HWND>(static_cast<intptr_t>(-3)); // HWND_MESSAGE
 
     HDC const kDc = reinterpret_cast<HDC>(static_cast<uintptr_t>(0x00010020));
@@ -169,6 +170,24 @@ namespace
     void PostSize(UINT width, UINT height)
     {
         Post(kWmSize, 0 /* SIZE_RESTORED */, MAKELPARAM(width, height));
+    }
+
+    // What Windows sends a window as it gains or loses the foreground: SDL takes keyboard (and so
+    // controller) focus from WM_SETFOCUS, and some games pause on WM_ACTIVATEAPP.
+    void PostActivation(HWND hwnd, bool active)
+    {
+        if (active)
+        {
+            PostTo(hwnd, kWmActivateApp, TRUE, 0);
+            PostTo(hwnd, kWmActivate, 1 /* WA_ACTIVE */, 0);
+            PostTo(hwnd, kWmSetFocus, 0, 0);
+        }
+        else
+        {
+            PostTo(hwnd, kWmActivate, 0 /* WA_INACTIVE */, 0);
+            PostTo(hwnd, kWmKillFocus, 0, 0);
+            PostTo(hwnd, kWmActivateApp, FALSE, 0);
+        }
     }
 
     std::wstring Lower(std::wstring s)
@@ -287,7 +306,7 @@ namespace
         if (!messageOnly && !parent)
         {
             PostTo(hwnd, kWmSize, 0, MAKELPARAM(Width(), Height()));
-            PostTo(hwnd, kWmActivate, 1 /* WA_ACTIVE */, 0);
+            PostActivation(hwnd, true);
         }
         return hwnd;
     }
@@ -706,14 +725,34 @@ namespace
     HWND WINAPI Shim_SetCapture(HWND) { return nullptr; } // nobody had the mouse before
     HKL WINAPI Shim_GetKeyboardLayout(DWORD) { return reinterpret_cast<HKL>(static_cast<uintptr_t>(0x04090409)); } // en-US
 
-    // Only the mapping games use to see whether a key types a character: letters, digits, space.
+    // A US layout's mappings between virtual keys, scan codes and the characters keys type.
     UINT WINAPI Shim_MapVirtualKeyW(UINT code, UINT type)
     {
-        if (type != 2 /* MAPVK_VK_TO_CHAR */)
+        switch (type)
+        {
+        case 0: return VirtualKeyToScanCode(code); // MAPVK_VK_TO_VSC
+        case 1: return ScanCodeToVirtualKey(code & 0xFF, (code & 0xFF00) == 0xE000, false); // MAPVK_VSC_TO_VK
+        case 3: return ScanCodeToVirtualKey(code & 0xFF, (code & 0xFF00) == 0xE000, true); // MAPVK_VSC_TO_VK_EX
+        case 4: // MAPVK_VK_TO_VSC_EX
+        {
+            bool extended = false;
+            UINT scan = VirtualKeyToScanCode(code, &extended);
+            return scan && extended ? 0xE000 | scan : scan;
+        }
+        case 2: // MAPVK_VK_TO_CHAR: the unshifted character (letters as capitals)
+        {
+            if ((code >= '0' && code <= '9') || (code >= 'A' && code <= 'Z') || code == ' ')
+                return code;
+            static const std::pair<UINT, char> kOem[] = { { 0xBD, '-' }, { 0xBB, '=' }, { 0xDB, '[' }, { 0xDD, ']' },
+                { 0xBA, ';' }, { 0xDE, '\'' }, { 0xC0, '`' }, { 0xDC, '\\' }, { 0xBC, ',' }, { 0xBE, '.' }, { 0xBF, '/' },
+                { 0x0D, '\r' }, { 0x08, '\b' }, { 0x09, '\t' }, { 0x1B, 0x1B } };
+            for (auto const& [vk, c] : kOem)
+                if (vk == code)
+                    return static_cast<UINT>(c);
             return 0;
-        if ((code >= '0' && code <= '9') || (code >= 'A' && code <= 'Z') || code == ' ')
-            return code;
-        return 0;
+        }
+        default: return 0;
+        }
     }
 
     // The character a key types on a US layout: letters (shifted or not), digits, space.
@@ -815,7 +854,7 @@ void AttachGameWindow(winrt::Windows::UI::Core::CoreWindow const& window)
         PostSize(static_cast<UINT>(std::lround(args.Size().Width * scale)), static_cast<UINT>(std::lround(args.Size().Height * scale)));
     });
     g_activatedToken = window.Activated([](CoreWindow const&, WindowActivatedEventArgs const& args) {
-        Post(kWmActivate, args.WindowActivationState() == CoreWindowActivationState::Deactivated ? 0 : 1, 0);
+        PostActivation(nullptr, args.WindowActivationState() != CoreWindowActivationState::Deactivated);
     });
     g_charToken = window.CharacterReceived([](CoreWindow const&, CharacterReceivedEventArgs const& args) {
         Post(kWmChar, args.KeyCode(), 1);
@@ -840,6 +879,13 @@ void DetachGameWindow()
 }
 
 void PostGameMessage(UINT message, WPARAM wParam, LPARAM lParam) { Post(message, wParam, lParam); }
+
+void BroadcastGameMessage(UINT message, WPARAM wParam, LPARAM lParam)
+{
+    std::lock_guard lock(g_lock);
+    for (auto const& entry : g_windows)
+        PostTo(entry.first, message, wParam, lParam);
+}
 UINT GameScreenWidth() { return Width(); }
 UINT GameScreenHeight() { return Height(); }
 HDC GameWindowDc() { return kDc; }

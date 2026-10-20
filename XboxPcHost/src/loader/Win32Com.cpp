@@ -70,7 +70,12 @@ namespace
     {
         if (IsEqualGUID(clsid, kClsidDirectInput8))
             return Shim_DirectInput8Create(nullptr, 0x0800, iid, out, outer);
-        return CoCreateInstance(clsid, outer, context, iid, out);
+        if (IsMMDeviceEnumerator(clsid))
+            return CreateMMDeviceEnumerator(iid, out);
+        HRESULT hr = CoCreateInstance(clsid, outer, context, iid, out);
+        HOST_LOG(L"CoCreateInstance {%08X-%04X-%04X-...} -> 0x%08X", static_cast<unsigned>(clsid.Data1), clsid.Data2, clsid.Data3,
+            static_cast<unsigned>(hr));
+        return hr;
     }
 }
 
