@@ -298,6 +298,13 @@ namespace
 
 int wmain(int argc, wchar_t** argv)
 {
+    // The console's strict handle checks: a bad handle passed to the system is an exception there
+    // (STATUS_INVALID_HANDLE), not an error code, so the harness raises them too.
+    PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict{};
+    strict.RaiseExceptionOnInvalidHandleReference = 1;
+    strict.HandleExceptionsPermanentlyEnabled = 1;
+    if (!SetProcessMitigationPolicy(ProcessStrictHandleCheckPolicy, &strict, sizeof(strict)))
+        fwprintf(stderr, L"strict handle checks not enabled (%lu)\n", GetLastError());
     if (argc < 2)
     {
         fputws(L"usage: host-test <exe> [--expect text] [--timeout seconds]\n", stderr);

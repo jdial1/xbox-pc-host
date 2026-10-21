@@ -649,6 +649,50 @@ namespace
 
     DWORD WINAPI Shim_GetFileType(HANDLE file) { return IsStdStandIn(file) ? FILE_TYPE_PIPE : GetFileType(file); }
     BOOL WINAPI Shim_FlushFileBuffers(HANDLE file) { return IsStdStandIn(file) ? TRUE : FlushFileBuffers(file); }
+
+    // The rest of what a CRT does with stdout/stderr: they behave like a pipe (no seeking, no size), and
+    // never reach the system, where the console's strict handle checks raise an exception for them
+    // (LLVM inside Mesa seeks on stderr from a static constructor).
+    BOOL StandInFails()
+    {
+        SetLastError(ERROR_INVALID_FUNCTION);
+        return FALSE;
+    }
+    DWORD WINAPI Shim_SetFilePointer(HANDLE file, LONG distance, PLONG high, DWORD method)
+    {
+        if (!IsStdStandIn(file))
+            return SetFilePointer(file, distance, high, method);
+        StandInFails();
+        return INVALID_SET_FILE_POINTER;
+    }
+    BOOL WINAPI Shim_SetFilePointerEx(HANDLE file, LARGE_INTEGER distance, PLARGE_INTEGER position, DWORD method)
+    {
+        return IsStdStandIn(file) ? StandInFails() : SetFilePointerEx(file, distance, position, method);
+    }
+    BOOL WINAPI Shim_GetFileSizeEx(HANDLE file, PLARGE_INTEGER size)
+    {
+        return IsStdStandIn(file) ? StandInFails() : GetFileSizeEx(file, size);
+    }
+    BOOL WINAPI Shim_GetFileInformationByHandle(HANDLE file, LPBY_HANDLE_FILE_INFORMATION info)
+    {
+        return IsStdStandIn(file) ? StandInFails() : GetFileInformationByHandle(file, info);
+    }
+    BOOL WINAPI Shim_ReadFile(HANDLE file, LPVOID buffer, DWORD size, LPDWORD read, LPOVERLAPPED overlapped)
+    {
+        if (!IsStdStandIn(file))
+            return ReadFile(file, buffer, size, read, overlapped);
+        SetLastError(ERROR_INVALID_HANDLE); // write-only
+        return FALSE;
+    }
+    BOOL WINAPI Shim_DuplicateHandle(HANDLE fromProcess, HANDLE source, HANDLE toProcess, LPHANDLE target, DWORD access,
+        BOOL inherit, DWORD options)
+    {
+        if (!IsStdStandIn(source))
+            return DuplicateHandle(fromProcess, source, toProcess, target, access, inherit, options);
+        if (target)
+            *target = source; // the same stand-in: closing it is harmless
+        return TRUE;
+    }
 }
 
 void RegisterKernel32(Win32Layer& layer)
@@ -704,10 +748,10 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", OutputDebugStringA);
     PASS("kernel32", QueryPerformanceCounter);
     PASS("kernel32", QueryPerformanceFrequency);
-    PASS("kernel32", ReadFile);
+    layer.Register("kernel32!ReadFile", reinterpret_cast<void*>(&Shim_ReadFile));
     PASS("kernel32", ResumeThread);
     PASS("kernel32", SetEvent);
-    PASS("kernel32", SetFilePointer);
+    layer.Register("kernel32!SetFilePointer", reinterpret_cast<void*>(&Shim_SetFilePointer));
     PASS("kernel32", SetFileTime);
     PASS("kernel32", Sleep);
     PASS("kernel32", SystemTimeToFileTime);
@@ -728,7 +772,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", CreateThreadpoolTimer);
     PASS("kernel32", CreateThreadpoolWait);
     PASS("kernel32", DecodePointer);
-    PASS("kernel32", DuplicateHandle);
+    layer.Register("kernel32!DuplicateHandle", reinterpret_cast<void*>(&Shim_DuplicateHandle));
     PASS("kernel32", EncodePointer);
     PASS("kernel32", ExitThread);
     PASS("kernel32", ExpandEnvironmentStringsW);
@@ -748,9 +792,9 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", GetCurrentThreadId);
     PASS("kernel32", GetEnvironmentStringsW);
     PASS("kernel32", GetExitCodeThread);
-    PASS("kernel32", GetFileInformationByHandle);
+    layer.Register("kernel32!GetFileInformationByHandle", reinterpret_cast<void*>(&Shim_GetFileInformationByHandle));
     PASS("kernel32", GetFileInformationByHandleEx);
-    PASS("kernel32", GetFileSizeEx);
+    layer.Register("kernel32!GetFileSizeEx", reinterpret_cast<void*>(&Shim_GetFileSizeEx));
     layer.Register("kernel32!GetFileType", reinterpret_cast<void*>(&Shim_GetFileType));
     PASS("kernel32", GetLocaleInfoA);
     PASS("kernel32", GetLocaleInfoEx);
@@ -793,7 +837,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", SetEndOfFile);
     PASS("kernel32", SetEnvironmentVariableW);
     PASS("kernel32", SetFileInformationByHandle);
-    PASS("kernel32", SetFilePointerEx);
+    layer.Register("kernel32!SetFilePointerEx", reinterpret_cast<void*>(&Shim_SetFilePointerEx));
     PASS("kernel32", SetLastError);
     PASS("kernel32", SetThreadpoolTimer);
     PASS("kernel32", SetThreadpoolWait);
