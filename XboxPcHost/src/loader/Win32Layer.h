@@ -137,6 +137,10 @@ void SetGameAudio(IXAudio2* engine);
 IXAudio2* GameAudioEngine(); // null when there is no audio device
 void RegisterDSound(Win32Layer& layer);
 void RegisterRegistry(Win32Layer& layer);
+void RegisterCursor(Win32Layer& layer);
+struct IDXGISwapChain;
+void DrawGameCursor(IDXGISwapChain* swapChain); // the system cursor, drawn into the back buffer before Present
+POINT GameCursorPosition();                       // in game window pixels
 
 // Static TLS for the game's exe (Win32Tls.cpp). Install once after loading, on any thread;
 // every thread that runs game code calls EnterGameThread first (DLL_PROCESS_ATTACH on the

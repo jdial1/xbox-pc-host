@@ -138,6 +138,7 @@
     <ClCompile Include="src\loader\Win32Legacy.cpp" />
     <ClCompile Include="src\loader\Win32DSound.cpp" />
     <ClCompile Include="src\loader\Win32Registry.cpp" />
+    <ClCompile Include="src\loader\Win32Cursor.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">

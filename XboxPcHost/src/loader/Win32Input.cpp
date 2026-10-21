@@ -279,6 +279,13 @@ LPARAM KeyMessageLParam(UINT vk, bool down)
     return lParam;
 }
 
+POINT GameCursorPosition()
+{
+    std::lock_guard lock(g_lock);
+    PlaceCursor();
+    return { ClampTo(g_cursorX, GameScreenWidth()), ClampTo(g_cursorY, GameScreenHeight()) };
+}
+
 bool GameReadsXInput()
 {
     ULONGLONG polled = g_xinputPolled;

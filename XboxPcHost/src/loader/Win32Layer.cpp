@@ -78,6 +78,7 @@ Win32Layer::Win32Layer()
     RegisterDSound(*this);
     RegisterLegacy(*this); // last: replaces pass-throughs of the same names
     RegisterRegistry(*this); // HKCU kept by the host; replaces the registry pass-throughs
+    RegisterCursor(*this);   // ShowCursor/SetCursor decide whether the host draws the cursor
 }
 
 void Win32Layer::Register(const char* key, void* fn)

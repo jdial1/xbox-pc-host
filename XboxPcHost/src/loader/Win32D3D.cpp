@@ -21,6 +21,7 @@ namespace
     constexpr size_t kMakeWindowAssociation = 8, kCreateSwapChain = 10;
     constexpr size_t kCreateSwapChainForHwnd = 15; // IDXGIFactory1 ends at 13, then IsWindowedStereoEnabled
     constexpr size_t kPresent = 8; // IDXGIDeviceSubObject ends at 7, then IDXGISwapChain starts with Present
+    constexpr size_t kPresent1 = 22; // IDXGISwapChain1: after GetDesc1 .. GetHwnd, GetCoreWindow
     constexpr size_t kResizeBuffers = 13; // after GetBuffer, Set/GetFullscreenState and GetDesc
     constexpr size_t kSetFullscreenState = 10, kGetFullscreenState = 11, kResizeTarget = 14, kGetContainingOutput = 15;
     // The factory's ways to an adapter, and the adapter's to its outputs.
@@ -62,6 +63,8 @@ namespace
     using CreateSwapChainFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
     using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
     PresentFn g_originalPresent = nullptr;
+    using Present1Fn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
+    Present1Fn g_originalPresent1 = nullptr;
     using ResizeBuffersFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
     ResizeBuffersFn g_originalResizeBuffers = nullptr;
 
@@ -280,6 +283,8 @@ namespace
 
     HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain* self, UINT syncInterval, UINT flags)
     {
+        if (!(flags & DXGI_PRESENT_TEST))
+            DrawGameCursor(self);
         if (!g_presented.exchange(true))
             HOST_LOG(L"first game frame presented");
         {
@@ -302,6 +307,13 @@ namespace
             }
         }
         return g_originalPresent(self, syncInterval, flags);
+    }
+
+    HRESULT STDMETHODCALLTYPE Hook_Present1(IDXGISwapChain1* self, UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS* params)
+    {
+        if (!(flags & DXGI_PRESENT_TEST))
+            DrawGameCursor(self);
+        return g_originalPresent1(self, syncInterval, flags, params);
     }
 
     // Width or height 0 means "the window's size", which DXGI can't read from a CoreWindow off its
@@ -355,12 +367,14 @@ namespace
         // One vtable serves IDXGISwapChain and its later versions, so patching it covers all of them.
         void** original = Patch(swapChain1, kSwapChainSlots, {
             { kPresent, reinterpret_cast<void*>(&Hook_Present) },
+            { kPresent1, reinterpret_cast<void*>(&Hook_Present1) },
             { kResizeBuffers, reinterpret_cast<void*>(&Hook_ResizeBuffers) },
             { kSetFullscreenState, reinterpret_cast<void*>(&Hook_SetFullscreenState) },
             { kGetFullscreenState, reinterpret_cast<void*>(&Hook_GetFullscreenState) },
             { kResizeTarget, reinterpret_cast<void*>(&Hook_ResizeTarget) },
             { kGetContainingOutput, reinterpret_cast<void*>(&Hook_GetContainingOutput) } });
         g_originalPresent = reinterpret_cast<PresentFn>(original[kPresent]);
+        g_originalPresent1 = reinterpret_cast<Present1Fn>(original[kPresent1]);
         g_originalResizeBuffers = reinterpret_cast<ResizeBuffersFn>(original[kResizeBuffers]);
         hr = swapChain1->QueryInterface(iid, out);
         swapChain1->Release();
