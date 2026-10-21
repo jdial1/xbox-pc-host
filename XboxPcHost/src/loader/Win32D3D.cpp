@@ -116,6 +116,16 @@ namespace
         return current;
     }
 
+}
+
+// For other files' COM hooks (D3D12): the same as Patch.
+void** PatchComTable(void* object, size_t slots, std::initializer_list<std::pair<size_t, void*>> replacements)
+{
+    return Patch(object, slots, replacements);
+}
+
+namespace
+{
     // The table a patched object had before Patch, to call the methods it replaced.
     void** OriginalTable(void* object)
     {
