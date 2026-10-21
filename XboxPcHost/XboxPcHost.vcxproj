@@ -114,6 +114,7 @@
     <ClCompile Include="src\Graphics.cpp" />
     <ClCompile Include="src\Input.cpp" />
     <ClCompile Include="src\InputMapping.cpp" />
+    <ClCompile Include="src\ControllerMap.cpp" />
     <ClCompile Include="src\Log.cpp" />
     <ClCompile Include="src\loader\PeImage.cpp" />
     <ClCompile Include="src\loader\Win32Layer.cpp" />

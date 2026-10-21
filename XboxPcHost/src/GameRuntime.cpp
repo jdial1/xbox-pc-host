@@ -222,6 +222,8 @@ namespace
             m_profile = ReadInputProfile(m_root);
             if (m_profile == InputProfile::Default)
                 m_profile = ReadInputProfile(exe.parent_path());
+            if (m_profile == InputProfile::Custom)
+                HOST_LOG(L"controller: the game's own mapping (host-controls.txt)");
             if (m_profile == InputProfile::Pointer)
                 HOST_LOG(L"controller: pointer profile (sticks move the pointer, A/B click)");
 

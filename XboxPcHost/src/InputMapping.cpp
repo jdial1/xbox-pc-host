@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "InputMapping.h"
+#include "ControllerMap.h"
 #include <fstream>
 
 using winrt::Windows::Gaming::Input::GamepadButtons;
@@ -56,6 +57,8 @@ namespace
 
 InputProfile ReadInputProfile(std::filesystem::path const& gameFolder)
 {
+    if (LoadControllerMap(gameFolder / L"host-controls.txt"))
+        return InputProfile::Custom;
     std::ifstream file(gameFolder / L"host-input.txt");
     std::string word;
     file >> word;
@@ -85,6 +88,11 @@ GameInputFrame MapInput(KeyboardMouseState const& kbm, PadState const& pad, floa
     if (profile == InputProfile::Pointer)
     {
         MapPointer(pad, seconds, frame);
+        return frame;
+    }
+    if (profile == InputProfile::Custom)
+    {
+        MapControllerFrame(pad, seconds, frame);
         return frame;
     }
 

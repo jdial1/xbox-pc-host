@@ -8,6 +8,8 @@ struct GameInputFrame
     std::array<bool, 3> mouseButtons{}; // left, right, middle
     float cursorDx = 0, cursorDy = 0;   // pixels moved this frame
     float wheel = 0;                    // notches this frame, positive away from the user
+    bool cursorSave = false;            // remember where the pointer is (before this frame's moves)
+    bool cursorRestore = false;         // put it back there (after this frame's button changes)
 
     // The controller as it is, for games that read it themselves through XInput.
     bool padConnected = false;

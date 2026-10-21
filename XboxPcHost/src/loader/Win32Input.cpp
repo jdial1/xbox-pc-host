@@ -21,6 +21,7 @@ namespace
     std::mutex g_lock;
     GameInputFrame g_state; // what is down now
     float g_cursorX = 0, g_cursorY = 0;
+    float g_savedX = 0, g_savedY = 0; // where a controller drag started
     bool g_cursorPlaced = false;
 
     LONG ClampTo(float v, UINT size) { return std::clamp(static_cast<LONG>(v), 0L, static_cast<LONG>(size) - 1); }
@@ -338,6 +339,11 @@ void FeedGameInput(GameInputFrame const& frame)
         PostGameMessage(frame.keys[vk] ? kWmKeyDown : kWmKeyUp, static_cast<WPARAM>(vk), KeyMessageLParam(vk, frame.keys[vk]));
     }
 
+    if (frame.cursorSave)
+    {
+        g_savedX = g_cursorX;
+        g_savedY = g_cursorY;
+    }
     if (frame.cursorDx != 0 || frame.cursorDy != 0)
     {
         g_cursorX = std::clamp(g_cursorX + frame.cursorDx, 0.0f, static_cast<float>(GameScreenWidth() - 1));
@@ -360,6 +366,12 @@ void FeedGameInput(GameInputFrame const& frame)
         // The high word of wParam is the distance in 120ths of a notch; the low word is button flags.
         auto distance = static_cast<short>(std::lround(frame.wheel * 120.0f));
         PostGameMessage(kWmMouseWheel, MAKEWPARAM(ButtonFlags(), distance), CursorLParam());
+    }
+    if (frame.cursorRestore)
+    {
+        g_cursorX = g_savedX;
+        g_cursorY = g_savedY;
+        PostGameMessage(kWmMouseMove, ButtonFlags(), CursorLParam());
     }
 }
 

@@ -1,0 +1,51 @@
+# Homeworld: Deserts of Kharak - controller mapping for Xbox PC Host
+#
+# No official or community gamepad layout exists for this game, so this follows console RTS
+# conventions (Halo Wars 2): left stick is the pointer, right stick is the camera, A selects and
+# B gives orders, and a trigger held down opens a second set of commands. The keys are the game's
+# own defaults (default.dokhotkeys); rebind there and change the key names here to match.
+# Format: <control> = <action>, "LT+<control>" while LT is held. See ControllerMap.cpp in the host.
+
+# --- Pointer and camera
+LeftStick   = pointer 1000      # move the cursor
+RightStickY = wheel 14          # zoom in and out
+RightStickX = drag middle 500   # rotate the camera (middle-button drag)
+
+# --- Selection and orders
+A           = mouse left        # select, press buttons; hold A and move to box-select
+B           = mouse right       # move / attack / harvest here
+RT          = key Shift         # hold: add to selection, queue waypoints
+X           = key A             # attack-move: then point and press A
+Y           = key Space         # sensors manager (tactical map)
+LB          = key Tab           # cycle through the selection's lead unit
+RB          = key F             # centre the camera on the selection
+View        = key F2            # select all ground combat units
+Menu        = key F10           # game menu
+LS          = key Alt           # tactical view
+RS          = key Backspace     # reset the camera
+
+# --- Control groups
+DPadUp      = key 1
+DPadRight   = key 2
+DPadDown    = key 3
+DPadLeft    = key 4
+
+# --- LT held: commands
+LT          = layer
+LT+LeftStick = arrows           # pan the camera
+LT+A        = key S             # stop
+LT+B        = key G             # guard
+LT+X        = key V             # move without attacking
+LT+Y        = key F1            # select the carrier
+LT+LB       = key F3            # cycle idle salvagers
+LT+RB       = key F4            # select production cruisers
+LT+DPadUp   = key Ctrl+1        # make control groups 1-4 from the selection
+LT+DPadRight = key Ctrl+2
+LT+DPadDown = key Ctrl+3
+LT+DPadLeft = key Ctrl+4
+LT+RightStickUp    = key Q      # unit abilities: flick the right stick
+LT+RightStickRight = key W
+LT+RightStickDown  = key E
+LT+RightStickLeft  = key R
+LT+View     = key Escape        # cancel the current order
+LT+Menu     = key Ctrl+F9       # quick save
