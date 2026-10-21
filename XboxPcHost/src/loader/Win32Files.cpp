@@ -328,6 +328,79 @@ namespace
         return h;
     }
 
+    // GetFileInformationByName (Windows 11 24H2) as the SDK declares it for that version.
+    enum : int { kStatByName = 0, kStatBasicByName = 3 };
+    struct StatInfo // FILE_STAT_INFORMATION
+    {
+        LARGE_INTEGER fileId, creationTime, lastAccessTime, lastWriteTime, changeTime, allocationSize, endOfFile;
+        DWORD fileAttributes, reparseTag, numberOfLinks, effectiveAccess;
+    };
+    struct StatBasicInfo // FILE_STAT_BASIC_INFORMATION
+    {
+        LARGE_INTEGER fileId, creationTime, lastAccessTime, lastWriteTime, changeTime, allocationSize, endOfFile;
+        DWORD fileAttributes, reparseTag, numberOfLinks, deviceType, deviceCharacteristics, reserved;
+        LARGE_INTEGER volumeSerialNumber;
+        FILE_ID_128 fileId128;
+    };
+
+    // msvcrt's stat (the one in Windows 11 24H2) asks for this first and only falls back to its old
+    // FindFirstFile way, which can't stat "." or a directory named with a trailing slash, when it's
+    // missing. Answered from a handle to the file.
+    BOOL WINAPI Shim_GetFileInformationByName(PCWSTR name, int infoClass, PVOID buffer, ULONG size)
+    {
+        bool basic = infoClass == kStatBasicByName;
+        if ((infoClass != kStatByName && !basic) || size < (basic ? sizeof(StatBasicInfo) : sizeof(StatInfo)))
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        HANDLE h = Shim_CreateFileW(name, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            return FALSE;
+        FILE_BASIC_INFO times{};
+        FILE_STANDARD_INFO standard{};
+        FILE_ID_INFO id{};
+        FILE_ATTRIBUTE_TAG_INFO tag{};
+        BOOL ok = GetFileInformationByHandleEx(h, FileBasicInfo, &times, sizeof(times)) &&
+            GetFileInformationByHandleEx(h, FileStandardInfo, &standard, sizeof(standard));
+        DWORD error = GetLastError();
+        GetFileInformationByHandleEx(h, FileIdInfo, &id, sizeof(id)); // optional: not every file system has ids
+        GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof(tag));
+        CloseHandle(h);
+        if (!ok)
+        {
+            SetLastError(error);
+            return FALSE;
+        }
+        StatBasicInfo info{};
+        memcpy(&info.fileId, id.FileId.Identifier, sizeof(info.fileId));
+        info.creationTime = times.CreationTime;
+        info.lastAccessTime = times.LastAccessTime;
+        info.lastWriteTime = times.LastWriteTime;
+        info.changeTime = times.ChangeTime;
+        info.allocationSize = standard.AllocationSize;
+        info.endOfFile = standard.EndOfFile;
+        info.fileAttributes = times.FileAttributes;
+        info.reparseTag = tag.ReparseTag;
+        info.numberOfLinks = standard.NumberOfLinks;
+        if (basic)
+        {
+            info.deviceType = 0x07; // FILE_DEVICE_DISK (winioctl.h)
+            info.volumeSerialNumber.QuadPart = static_cast<LONGLONG>(id.VolumeSerialNumber);
+            info.fileId128 = id.FileId;
+            memcpy(buffer, &info, sizeof(StatBasicInfo));
+        }
+        else
+        {
+            StatInfo stat{};
+            memcpy(&stat, &info, offsetof(StatInfo, effectiveAccess));
+            stat.effectiveAccess = FILE_ALL_ACCESS;
+            memcpy(buffer, &stat, sizeof(stat));
+        }
+        return TRUE;
+    }
+
     BOOL WINAPI Shim_CreateDirectoryExW(LPCWSTR, LPCWSTR name, LPSECURITY_ATTRIBUTES security)
     {
         return Shim_CreateDirectoryW(name, security);
@@ -445,6 +518,7 @@ void RegisterFiles(Win32Layer& layer)
     SHIM(CreateFileA);
     SHIM(CreateFileW);
     SHIM(GetFinalPathNameByHandleW);
+    SHIM(GetFileInformationByName);
     SHIM(GetFileSize);
     SHIM(FindFirstFileA);
     SHIM(FindFirstFileW);

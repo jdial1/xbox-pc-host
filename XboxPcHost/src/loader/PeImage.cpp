@@ -43,7 +43,8 @@ IMAGE_NT_HEADERS64* PeImage::Nt() const
     return At<IMAGE_NT_HEADERS64>(static_cast<uint32_t>(At<IMAGE_DOS_HEADER>(0)->e_lfanew));
 }
 
-bool PeImage::Load(std::filesystem::path const& path, ImportResolver& resolver, std::wstring& error)
+bool PeImage::Load(std::filesystem::path const& path, ImportResolver& resolver, std::wstring& error,
+    std::function<void()> const& mapped)
 {
     m_path = path;
     std::vector<uint8_t> file;
@@ -105,6 +106,8 @@ bool PeImage::Load(std::filesystem::path const& path, ImportResolver& resolver, 
         m_relocated = true;
     }
 
+    if (mapped)
+        mapped();
     if (!BindImports(resolver, error)) return false;
     ReadTls();
     if (!ProtectSections(error)) return false;

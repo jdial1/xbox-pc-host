@@ -162,6 +162,26 @@
       <DeploymentContent>true</DeploymentContent>
     </None>
   </ItemGroup>
+  <!-- TLS slots for game images with static TLS (see src\loader\Win32Tls.cpp), built by
+       ..\tools\tls-slot\build.ps1 and shipped at the package root. -->
+  <PropertyGroup>
+    <TlsSlotDir>$(ProjectDir)$(IntDir)tls-slots\</TlsSlotDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(TlsSlotDir)XboxPcHostTls1.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls1.dll</Link></None>
+    <None Include="$(TlsSlotDir)XboxPcHostTls2.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls2.dll</Link></None>
+    <None Include="$(TlsSlotDir)XboxPcHostTls3.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls3.dll</Link></None>
+    <None Include="$(TlsSlotDir)XboxPcHostTls4.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls4.dll</Link></None>
+    <None Include="$(TlsSlotDir)XboxPcHostTls5.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls5.dll</Link></None>
+    <None Include="$(TlsSlotDir)XboxPcHostTls6.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls6.dll</Link></None>
+    <None Include="$(TlsSlotDir)XboxPcHostTls7.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls7.dll</Link></None>
+    <None Include="$(TlsSlotDir)XboxPcHostTls8.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls8.dll</Link></None>
+    <None Include="$(TlsSlotDir)XboxPcHostTls9.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls9.dll</Link></None>
+    <None Include="$(TlsSlotDir)XboxPcHostTls10.dll"><DeploymentContent>true</DeploymentContent><Link>XboxPcHostTls10.dll</Link></None>
+  </ItemGroup>
+  <Target Name="BuildTlsSlots" BeforeTargets="PrepareForBuild" Inputs="..\tools\tls-slot\TlsSlot.cpp;..\tools\tls-slot\build.ps1" Outputs="$(TlsSlotDir)XboxPcHostTls10.dll">
+    <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; &gt;nul &amp;&amp; powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\tools\tls-slot\build.ps1&quot; -Out &quot;$(TlsSlotDir.TrimEnd('\'))&quot;" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="..\packages\Microsoft.Windows.CppWinRT.2.0.240405.15\build\native\Microsoft.Windows.CppWinRT.targets" Condition="Exists('..\packages\Microsoft.Windows.CppWinRT.2.0.240405.15\build\native\Microsoft.Windows.CppWinRT.targets')" />

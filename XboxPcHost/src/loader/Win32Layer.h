@@ -46,6 +46,7 @@ void BeginGameDllLoading(std::filesystem::path const& exeFolder); // before the 
 void RunDeferredGameDllInits();                                    // on the game thread, before its entry
 HMODULE LoadGameDllByPath(const wchar_t* path, bool& isGameFile);
 void* ResolveFromGameDll(const char* dll, const char* name, uint16_t ordinal);
+bool GameDllPreferred(const char* dll); // the game ships this DLL whole: its copy wins over the layer's shims
 void* GameDllExport(HMODULE module, const char* name, uint16_t ordinal);
 HMODULE GameDllNamed(const char* name);
 HMODULE GameDllContaining(const void* p);
@@ -146,7 +147,8 @@ POINT GameCursorPosition();                       // in game window pixels
 // every thread that runs game code calls EnterGameThread first (DLL_PROCESS_ATTACH on the
 // game's main thread, DLL_THREAD_ATTACH on the others) and LeaveGameThread when it's done.
 bool InstallGameTls(PeImage const& image, std::wstring& error);
-bool InstallDllTls(PeImage const& image, std::wstring& error); // a game DLL's, while the exe has none
+bool InstallDllTls(PeImage const& image, std::wstring& error); // a game DLL's
+void ResetGameTls(); // frees every slot, before a game's images load
 void EnterGameThread(DWORD reason);
 void LeaveGameThread();
 

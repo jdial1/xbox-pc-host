@@ -658,6 +658,7 @@ void RegisterKernel32(Win32Layer& layer)
 
     layer.Register("kernel32!CreateThread", reinterpret_cast<void*>(&Shim_CreateThread));
     layer.Register("kernel32!ExitProcess", reinterpret_cast<void*>(&Shim_ExitProcess));
+    layer.Register("ntdll!RtlPcToFileHeader", reinterpret_cast<void*>(&Shim_RtlPcToFileHeader)); // msvcrt's startup
     layer.Register("kernel32!GetModuleHandleA", reinterpret_cast<void*>(&Shim_GetModuleHandleA));
     layer.Register("kernel32!GetModuleHandleW", reinterpret_cast<void*>(&Shim_GetModuleHandleW));
     layer.Register("kernel32!GetModuleFileNameA", reinterpret_cast<void*>(&Shim_GetModuleFileNameA));
@@ -787,6 +788,7 @@ void RegisterKernel32(Win32Layer& layer)
     PASS("kernel32", RtlUnwind);
     PASS("kernel32", RtlUnwindEx);
     PASS("kernel32", RtlVirtualUnwind);
+    PASS("kernel32", __C_specific_handler); // the host's vcruntime one: C scope tables are the same everywhere
     layer.Register("kernel32!VirtualFree", reinterpret_cast<void*>(&Shim_VirtualFree));
     PASS("kernel32", SetEndOfFile);
     PASS("kernel32", SetEnvironmentVariableW);

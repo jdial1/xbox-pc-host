@@ -27,7 +27,8 @@ namespace
     bool g_deferInit = false;           // while the exe's imports are bound, DllMain waits for the game thread
     std::vector<GameDll*> g_pendingInit;
     // DLLs being mapped right now (nested when one imports another), and whether a dependency failed.
-    struct Loading { std::string name; std::string missing; };
+    // image is set once the DLL is mapped, so a DLL that imports it back (a cycle) can bind to it.
+    struct Loading { std::string name; std::string missing; PeImage* image = nullptr; };
     std::vector<Loading> g_loading;
 
     using DllMainFn = BOOL(WINAPI*)(HINSTANCE, DWORD, LPVOID);
@@ -54,6 +55,15 @@ namespace
         return nullptr;
     }
 
+    // A DLL still binding its imports, already mapped: one further up an import cycle.
+    PeImage* StillLoading(std::string const& name)
+    {
+        for (auto const& l : g_loading)
+            if (l.name == name && l.image)
+                return l.image;
+        return nullptr;
+    }
+
     // Where Windows would look for a DLL the game names without a path: next to the exe, then the
     // current directory; plus next to the DLL that imports it.
     std::filesystem::path FindGameDllFile(std::string const& file, std::filesystem::path const& besides)
@@ -73,6 +83,19 @@ namespace
     }
 
     std::string FileOf(std::string const& normalized) { return normalized + ".dll"; }
+
+    // DLLs the layer has a few pass-throughs for, but which a game can bring whole: then the game's
+    // copy serves all of its imports (MinGW builds need the real msvcrt, startup code and all).
+    bool BringsOwnCopy(std::string const& normalized)
+    {
+        // No function-local statics here: their thread-safe init would add a thread_local to the host's TLS.
+        return normalized == "msvcrt" && !FindGameDllFile(FileOf(normalized), {}).empty();
+    }
+}
+
+bool GameDllPreferred(const char* dll)
+{
+    return BringsOwnCopy(NormalizeDllName(dll));
 }
 
 void SetGameDllLayer(Win32Layer& layer) { g_layer = &layer; }
@@ -81,6 +104,7 @@ void SetGameDllLayer(Win32Layer& layer) { g_layer = &layer; }
 // hold DllMain back until the game thread starts, as Windows runs static imports' DllMain first thing.
 void BeginGameDllLoading(std::filesystem::path const& exeFolder)
 {
+    ResetGameTls(); // a new game: every TLS slot is free again
     std::lock_guard lock(g_lock);
     for (auto& d : g_dlls)
         (void)d->image.release();
@@ -112,14 +136,17 @@ HMODULE LoadGameDll(std::filesystem::path const& file, std::string const& name)
     std::lock_guard lock(g_lock);
     if (GameDll* d = ByName(name))
         return reinterpret_cast<HMODULE>(d->image->Base());
+    if (PeImage* p = StillLoading(name))
+        return reinterpret_cast<HMODULE>(p->Base());
     if (g_refused.count(name) || !g_layer)
         return nullptr;
 
     auto image = std::make_unique<PeImage>();
     std::wstring error;
     // The DLL's own imports may name other game DLLs; the layer asks back through ResolveFromGameDll.
+    size_t loading = g_loading.size();
     g_loading.push_back({ name, {} });
-    bool loaded = image->Load(file, *g_layer, error);
+    bool loaded = image->Load(file, *g_layer, error, [&] { g_loading[loading].image = image.get(); });
     std::string missing = g_loading.back().missing;
     g_loading.pop_back();
     if (loaded && !missing.empty())
@@ -166,7 +193,7 @@ HMODULE LoadGameDllByPath(const wchar_t* path, bool& isGameFile)
     isGameFile = false;
     std::filesystem::path p(path ? path : L"");
     std::string name = NormalizeDllName(Narrow(p.filename().wstring()).c_str());
-    if (name.empty() || g_layer->HasDll(name))
+    if (name.empty() || (g_layer->HasDll(name) && !BringsOwnCopy(name)))
         return nullptr;
     {
         std::lock_guard lock(g_lock);
@@ -193,13 +220,16 @@ HMODULE LoadGameDllByPath(const wchar_t* path, bool& isGameFile)
 void* ResolveFromGameDll(const char* dll, const char* name, uint16_t ordinal)
 {
     std::string n = NormalizeDllName(dll);
-    if (!g_layer || g_layer->HasDll(n))
+    if (!g_layer || (g_layer->HasDll(n) && !BringsOwnCopy(n)))
         return nullptr;
     HMODULE module;
     {
         std::lock_guard lock(g_lock);
         GameDll* d = ByName(n);
         module = d ? reinterpret_cast<HMODULE>(d->image->Base()) : nullptr;
+        if (!module)
+            if (PeImage* p = StillLoading(n))
+                return name ? p->FindExport(name) : p->FindExportByOrdinal(ordinal);
     }
     if (!module)
     {

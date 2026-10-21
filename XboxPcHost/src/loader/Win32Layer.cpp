@@ -98,12 +98,22 @@ void* Win32Layer::ResolveImport(const char* dll, const char* name, uint16_t ordi
 {
     std::string key = ImportKey(dll, name, ordinal);
 
+    if (GameDllPreferred(dll))
+        if (void* fn = ResolveFromGameDll(dll, name, ordinal))
+            return fn;
     // The game can resolve names at run time from any of its threads.
     {
         std::lock_guard lock(m_lock);
         auto it = m_table.find(key);
         if (it != m_table.end())
             return it->second;
+        // kernel32 forwards ntdll's Rtl* functions; one entry serves both names.
+        if (name && key.rfind("ntdll!", 0) == 0)
+        {
+            it = m_table.find("kernel32!" + key.substr(6));
+            if (it != m_table.end())
+                return it->second;
+        }
     }
     // A DLL the game ships (mapping it binds its imports through here again, so not under the lock).
     if (void* fn = ResolveFromGameDll(dll, name, ordinal))

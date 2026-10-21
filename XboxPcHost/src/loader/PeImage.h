@@ -21,8 +21,11 @@ public:
     PeImage& operator=(PeImage const&) = delete;
     ~PeImage();
 
-    // Returns false and fills error on failure.
-    bool Load(std::filesystem::path const& path, ImportResolver& resolver, std::wstring& error);
+    // Returns false and fills error on failure. mapped, if given, runs once the image is in place
+    // (relocated, exports readable) and before its imports are bound: DLLs that import each other
+    // can then find one another's exports.
+    bool Load(std::filesystem::path const& path, ImportResolver& resolver, std::wstring& error,
+        std::function<void()> const& mapped = {});
 
     uint8_t* Base() const { return m_base; }
     size_t Size() const { return m_size; }

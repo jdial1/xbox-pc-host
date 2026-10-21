@@ -233,6 +233,21 @@ namespace
         return BCRYPT_SUCCESS(BCryptGenRandom(nullptr, out, size, BCRYPT_USE_SYSTEM_PREFERRED_RNG)) ? TRUE : FALSE;
     }
     BOOL WINAPI Shim_CryptReleaseContext(ULONG_PTR, DWORD) { return TRUE; }
+    // RtlGenRandom, behind msvcrt's rand_s (std::random_device in MinGW builds).
+    BOOLEAN WINAPI Shim_SystemFunction036(PVOID out, ULONG size)
+    {
+        return BCRYPT_SUCCESS(BCryptGenRandom(nullptr, static_cast<PUCHAR>(out), size, BCRYPT_USE_SYSTEM_PREFERRED_RNG));
+    }
+
+    // Desktop only; the installed memory is the total physical memory here.
+    BOOL WINAPI Shim_GetPhysicallyInstalledSystemMemory(PULONGLONG kilobytes)
+    {
+        MEMORYSTATUSEX status{ sizeof(status) };
+        if (!kilobytes || !GlobalMemoryStatusEx(&status))
+            return FALSE;
+        *kilobytes = status.ullTotalPhys / 1024;
+        return TRUE;
+    }
 }
 
 void RegisterLegacy(Win32Layer& layer)
@@ -264,6 +279,20 @@ void RegisterLegacy(Win32Layer& layer)
     REG("advapi32!CryptAcquireContextW", Shim_CryptAcquireContext);
     REG("advapi32!CryptGenRandom", Shim_CryptGenRandom);
     REG("advapi32!CryptReleaseContext", Shim_CryptReleaseContext);
+    REG("advapi32!SystemFunction036", Shim_SystemFunction036);
+    REG("cryptbase!SystemFunction036", Shim_SystemFunction036);
+    // Recoil sizes its thread pool from these (through GetProcAddress); without them it sees 0 cores.
+    REG("kernel32!GetLogicalProcessorInformation", GetLogicalProcessorInformation);
+    REG("kernel32!GetLogicalProcessorInformationEx", GetLogicalProcessorInformationEx);
+    REG("kernel32!GetPhysicallyInstalledSystemMemory", Shim_GetPhysicallyInstalledSystemMemory);
+    // winpthread checks a new thread's handle with GetHandleInformation; a failure there is a failed
+    // pthread_create, so std::thread throws. Both these and the completion ports are app APIs.
+    REG("kernel32!GetHandleInformation", GetHandleInformation);
+    REG("kernel32!SetHandleInformation", SetHandleInformation);
+    REG("kernel32!CreateIoCompletionPort", CreateIoCompletionPort);
+    REG("kernel32!GetQueuedCompletionStatus", GetQueuedCompletionStatus);
+    REG("kernel32!GetQueuedCompletionStatusEx", GetQueuedCompletionStatusEx);
+    REG("kernel32!PostQueuedCompletionStatus", PostQueuedCompletionStatus);
     REG("kernel32!CreateFileMappingW", Shim_CreateFileMappingW);
     REG("kernel32!CreateFileMappingA", Shim_CreateFileMappingA);
     REG("kernel32!MapViewOfFile", Shim_MapViewOfFile);
