@@ -34,6 +34,12 @@ namespace
         return hr;
     }
 
+    // The game's first device, kept: D3D12 has one device per adapter, and the console won't make a new
+    // one once a game has let go of it (Mesa destroys its screen when SDL's probe windows go, then makes
+    // another: DXGI_ERROR_DEVICE_RESET). Holding it, every D3D12CreateDevice gets that same device back.
+    std::mutex g_deviceLock;
+    winrt::com_ptr<ID3D12Device> g_device;
+
     HRESULT WINAPI Shim_D3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level, REFIID iid, void** out)
     {
         HRESULT hr = D3D12CreateDevice(adapter, level, iid, out);
@@ -41,8 +47,18 @@ namespace
         {
             void** original = PatchComTable(*out, 128, { { kCreateFence, reinterpret_cast<void*>(&Hook_CreateFence) } });
             g_createFence = reinterpret_cast<CreateFenceFn>(original[kCreateFence]);
+            std::lock_guard lock(g_deviceLock);
+            if (!g_device)
+                static_cast<IUnknown*>(*out)->QueryInterface(__uuidof(ID3D12Device), g_device.put_void());
         }
         HOST_LOG(L"D3D12CreateDevice(feature level 0x%x) -> 0x%08x", static_cast<unsigned>(level), static_cast<unsigned>(hr));
+        if (FAILED(hr))
+        {
+            std::lock_guard lock(g_deviceLock);
+            if (g_device)
+                HOST_LOG(L"  the game's first D3D12 device: removed reason 0x%08x",
+                    static_cast<unsigned>(g_device->GetDeviceRemovedReason()));
+        }
         return hr;
     }
 }
