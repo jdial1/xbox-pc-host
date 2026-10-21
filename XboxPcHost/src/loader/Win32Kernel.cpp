@@ -334,7 +334,7 @@ namespace
         DWORD code = record->ExceptionCode;
         bool fault = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
             code == EXCEPTION_PRIV_INSTRUCTION || code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_STACK_OVERFLOW ||
-            code == STATUS_HEAP_CORRUPTION || code == EXCEPTION_ARRAY_BOUNDS_EXCEEDED;
+            code == STATUS_HEAP_CORRUPTION || code == EXCEPTION_ARRAY_BOUNDS_EXCEEDED || code == STATUS_INVALID_HANDLE;
         if (!fault || g_faultsLogged++ >= 8)
             return EXCEPTION_CONTINUE_SEARCH;
         auto at = static_cast<uint8_t*>(record->ExceptionAddress);
@@ -357,6 +357,39 @@ namespace
 }
 
 std::filesystem::path GameExePath() { return g_process.exeW; }
+
+namespace
+{
+    // Strict handle checks turn a bad CloseHandle into an exception; on the desktop it just fails.
+    bool CloseHandleGuarded(HANDLE handle, BOOL& result)
+    {
+        __try
+        {
+            result = CloseHandle(handle);
+            return true;
+        }
+        __except (GetExceptionCode() == STATUS_INVALID_HANDLE ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+        {
+            return false;
+        }
+    }
+
+    std::atomic<int> g_badCloses{ 0 };
+    BOOL WINAPI Shim_CloseHandle(HANDLE handle)
+    {
+        // The host's own stand-in handles land here too, and fail quietly like any other bad handle.
+        BOOL result = FALSE;
+        if (CloseHandleGuarded(handle, result))
+            return result;
+        if (g_badCloses++ < 8)
+        {
+            HOST_LOG(L"CloseHandle(%p): not a handle", handle);
+            LogGameStack(L"bad CloseHandle from");
+        }
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
+}
 
 // A game's own vectored handler went in at the head; put the RWX page flipper back in front of it,
 // or a JIT's handler would take an expected execute fault for a crash.
@@ -641,7 +674,7 @@ void RegisterKernel32(Win32Layer& layer)
     layer.Register("kernel32!GetModuleHandleExA", reinterpret_cast<void*>(&Shim_GetModuleHandleExA));
     layer.Register("kernel32!K32GetModuleInformation", reinterpret_cast<void*>(&Shim_K32GetModuleInformation));
 
-    PASS("kernel32", CloseHandle);
+    layer.Register("kernel32!CloseHandle", reinterpret_cast<void*>(&Shim_CloseHandle));
     PASS("kernel32", CreateEventA);
     PASS("kernel32", DeleteCriticalSection);
     PASS("kernel32", EnterCriticalSection);
