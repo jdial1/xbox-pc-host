@@ -1,0 +1,4 @@
+TextureMemPoolSize = 0
+UseLuaMemPools = 0
+VFSCacheArchiveFiles = 0
+ROAM = 0

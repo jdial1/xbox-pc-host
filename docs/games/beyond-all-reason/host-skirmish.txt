@@ -1,0 +1,62 @@
+[GAME]
+{
+	GameType=Beyond All Reason test-31691-a617033;
+	MapName=Red Comet Remake 1.8;
+	IsHost=1;
+	OnlyLocal=1;
+	MyPlayerName=Watcher;
+	HostIP=127.0.0.1;
+	HostPort=0;
+	GameStartDelay=0;
+	StartPosType=1;
+	MinSpeed=1;
+	MaxSpeed=20;
+	[PLAYER0]
+	{
+		Name=Watcher;
+		Spectator=1;
+		Team=0;
+	}
+	[AI0]
+	{
+		Name=BotA;
+		ShortName=BARb;
+		Version=stable;
+		Team=0;
+		Host=0;
+	}
+	[AI1]
+	{
+		Name=BotB;
+		ShortName=BARb;
+		Version=stable;
+		Team=1;
+		Host=0;
+	}
+	[TEAM0]
+	{
+		TeamLeader=0;
+		AllyTeam=0;
+		Side=Armada;
+	}
+	[TEAM1]
+	{
+		TeamLeader=0;
+		AllyTeam=1;
+		Side=Cortex;
+	}
+	[ALLYTEAM0]
+	{
+		NumAllies=0;
+	}
+	[ALLYTEAM1]
+	{
+		NumAllies=0;
+	}
+	[MODOPTIONS]
+	{
+		draft_mode=disabled;
+	}
+}
+
+
