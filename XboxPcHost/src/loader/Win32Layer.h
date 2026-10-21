@@ -46,6 +46,8 @@ void BeginGameDllLoading(std::filesystem::path const& exeFolder); // before the 
 void RunDeferredGameDllInits();                                    // on the game thread, before its entry
 HMODULE LoadGameDllByPath(const wchar_t* path, bool& isGameFile);
 void* ResolveFromGameDll(const char* dll, const char* name, uint16_t ordinal);
+// The game's own opengl32 (Mesa): a few functions it hands out are wrapped (Win32OpenGl.cpp).
+void* AdjustGameOpenGlExport(HMODULE module, const char* name, void* fn);
 bool GameDllPreferred(const char* dll); // the game ships this DLL whole: its copy wins over the layer's shims
 void* GameDllExport(HMODULE module, const char* name, uint16_t ordinal);
 HMODULE GameDllNamed(const char* name);
@@ -83,6 +85,7 @@ void SetGameDisplayForGdi(GameDisplay* display);
 void SetGameProcess(void* imageBase, std::filesystem::path const& exe, std::filesystem::path const& root);
 std::filesystem::path GameExePath(); // the running game's exe
 void KeepHostFaultHandlerFirst();    // after a game adds a vectored handler
+void RegisterD3D12(Win32Layer& layer);
 void RegisterLegacy(Win32Layer& layer);
 
 // ExitProcess on the game's main thread raises this so Run() can unwind to its
@@ -123,6 +126,7 @@ void BroadcastGameMessage(UINT message, WPARAM wParam, LPARAM lParam); // to eve
 UINT GameScreenWidth();
 UINT GameScreenHeight();
 HDC GameWindowDc(); // what the game's GetDC(hwnd) returns
+bool IsWindowDc(HDC dc); // the game window's DC or any window's from GetDC
 HMONITOR GameMonitor(); // the one monitor user32 and DXGI report
 
 // The DXGI output for that monitor, parented to the adapter (Win32DxgiOutput.cpp). Returns a new reference.

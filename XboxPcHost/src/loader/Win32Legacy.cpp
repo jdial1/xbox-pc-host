@@ -1,5 +1,6 @@
 #include "pch.h"
 #include <bcrypt.h>
+#include <evntprov.h>
 #include "loader/Win32Layer.h"
 #include "loader/Win32Text.h"
 #include "Log.h"
@@ -233,6 +234,34 @@ namespace
         return BCRYPT_SUCCESS(BCryptGenRandom(nullptr, out, size, BCRYPT_USE_SYSTEM_PREFERRED_RNG)) ? TRUE : FALSE;
     }
     BOOL WINAPI Shim_CryptReleaseContext(ULONG_PTR, DWORD) { return TRUE; }
+    // CoGetMalloc's allocator (desktop only, like IMalloc's declaration): the task allocator, CoTaskMemAlloc
+    // and friends, with IMalloc's methods in IMalloc's order.
+    constexpr GUID kIIDMalloc = { 0x00000002, 0x0000, 0x0000, { 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };
+    struct TaskMalloc final : IUnknown
+    {
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override
+        {
+            if (!out) return E_POINTER;
+            if (iid == __uuidof(IUnknown) || iid == kIIDMalloc) { *out = this; return S_OK; }
+            *out = nullptr;
+            return E_NOINTERFACE;
+        }
+        ULONG STDMETHODCALLTYPE AddRef() override { return 2; }
+        ULONG STDMETHODCALLTYPE Release() override { return 1; }
+        virtual void* STDMETHODCALLTYPE Alloc(SIZE_T size) { return CoTaskMemAlloc(size); }
+        virtual void* STDMETHODCALLTYPE Realloc(void* p, SIZE_T size) { return CoTaskMemRealloc(p, size); }
+        virtual void STDMETHODCALLTYPE Free(void* p) { CoTaskMemFree(p); }
+        virtual SIZE_T STDMETHODCALLTYPE GetSize(void*) { return static_cast<SIZE_T>(-1); } // unknown, as allowed
+        virtual int STDMETHODCALLTYPE DidAlloc(void*) { return -1; }
+        virtual void STDMETHODCALLTYPE HeapMinimize() {}
+    } g_taskMalloc;
+    HRESULT WINAPI Shim_CoGetMalloc(DWORD, IUnknown** out)
+    {
+        if (!out) return E_POINTER;
+        *out = &g_taskMalloc;
+        return S_OK;
+    }
+
     // RtlGenRandom, behind msvcrt's rand_s (std::random_device in MinGW builds).
     BOOLEAN WINAPI Shim_SystemFunction036(PVOID out, ULONG size)
     {
@@ -287,6 +316,15 @@ void RegisterLegacy(Win32Layer& layer)
     REG("kernel32!GetPhysicallyInstalledSystemMemory", Shim_GetPhysicallyInstalledSystemMemory);
     // winpthread checks a new thread's handle with GetHandleInformation; a failure there is a failed
     // pthread_create, so std::thread throws. Both these and the completion ports are app APIs.
+    // dxil.dll (Mesa's d3d12 shader compiler) registers an ETW provider and allocates with CoGetMalloc's
+    // allocator as it loads; a stub that "succeeds" without an allocator is a null call.
+    REG("ole32!CoGetMalloc", Shim_CoGetMalloc);
+    REG("advapi32!EventRegister", EventRegister);
+    REG("advapi32!EventUnregister", EventUnregister);
+    REG("advapi32!EventWrite", EventWrite);
+    REG("advapi32!EventWriteTransfer", EventWriteTransfer);
+    REG("advapi32!EventSetInformation", EventSetInformation);
+    REG("advapi32!EventEnabled", EventEnabled);
     REG("kernel32!GetHandleInformation", GetHandleInformation);
     REG("kernel32!SetHandleInformation", SetHandleInformation);
     REG("kernel32!CreateIoCompletionPort", CreateIoCompletionPort);

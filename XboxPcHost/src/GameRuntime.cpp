@@ -46,6 +46,19 @@ namespace
         UINT Width() const override { return m_graphics.Width() ? m_graphics.Width() : 1920; }
         UINT Height() const override { return m_graphics.Height() ? m_graphics.Height() : 1080; }
 
+        // The factory a swapchain for this device comes from: the device's adapter's for a D3D11 device,
+        // a new one for a D3D12 command queue (which has no adapter to ask).
+        static HRESULT FactoryFor(IUnknown* device, winrt::com_ptr<IDXGIFactory2>& factory)
+        {
+            winrt::com_ptr<IDXGIDevice> dxgiDevice;
+            if (FAILED(device->QueryInterface(__uuidof(IDXGIDevice), dxgiDevice.put_void())))
+                return CreateDXGIFactory2(0, __uuidof(IDXGIFactory2), factory.put_void());
+            winrt::com_ptr<IDXGIAdapter> adapter;
+            HRESULT hr = dxgiDevice->GetAdapter(adapter.put());
+            if (SUCCEEDED(hr)) hr = adapter->GetParent(__uuidof(IDXGIFactory2), factory.put_void());
+            return hr;
+        }
+
         HRESULT CreateSwapChain(IUnknown* device, DXGI_SWAP_CHAIN_DESC1 const& desc, IDXGISwapChain1** swapChain) override
         {
             // The desktop harness has no CoreWindow: a composition swapchain needs none, so it is made
@@ -53,12 +66,8 @@ namespace
             // the D3D frame tap.
             if (!m_graphics.Window() && g_frameTap)
             {
-                winrt::com_ptr<IDXGIDevice> dxgiDevice;
-                winrt::com_ptr<IDXGIAdapter> adapter;
                 winrt::com_ptr<IDXGIFactory2> factory;
-                HRESULT hr = device->QueryInterface(__uuidof(IDXGIDevice), dxgiDevice.put_void());
-                if (SUCCEEDED(hr)) hr = dxgiDevice->GetAdapter(adapter.put());
-                if (SUCCEEDED(hr)) hr = adapter->GetParent(__uuidof(IDXGIFactory2), factory.put_void());
+                HRESULT hr = FactoryFor(device, factory);
                 if (SUCCEEDED(hr)) hr = factory->CreateSwapChainForComposition(device, &desc, nullptr, swapChain);
                 return hr;
             }
@@ -144,11 +153,9 @@ namespace
 
         HRESULT Create(Job& job)
         {
-            auto dxgiDevice = job.device.as<IDXGIDevice>();
-            winrt::com_ptr<IDXGIAdapter> adapter;
-            winrt::check_hresult(dxgiDevice->GetAdapter(adapter.put()));
             winrt::com_ptr<IDXGIFactory2> factory;
-            winrt::check_hresult(adapter->GetParent(__uuidof(IDXGIFactory2), factory.put_void()));
+            if (HRESULT hr = FactoryFor(job.device.get(), factory); FAILED(hr))
+                return hr;
             // Only one swapchain can exist on the CoreWindow, so the shell lets go of its own first.
             if (!m_graphics.ReleaseForGame() && !m_graphics.HandedOver())
                 return E_FAIL;

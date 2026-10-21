@@ -76,6 +76,7 @@ Win32Layer::Win32Layer()
     RegisterCom(*this);
     RegisterGdiPlus(*this);
     RegisterDSound(*this);
+    RegisterD3D12(*this);
     RegisterLegacy(*this); // last: replaces pass-throughs of the same names
     RegisterRegistry(*this); // HKCU kept by the host; replaces the registry pass-throughs
     RegisterCursor(*this);   // ShowCursor/SetCursor decide whether the host draws the cursor

@@ -4,5 +4,5 @@ $root = Resolve-Path (Join-Path $PSScriptRoot '..\..\XboxPcHost')
 $out = Join-Path $PSScriptRoot 'out'
 New-Item -ItemType Directory -Force $out | Out-Null
 $src = @("$root\src\GameRuntime.cpp", "$root\src\Log.cpp", "$root\src\Graphics.cpp", "$root\src\InputMapping.cpp", "$root\src\ControllerMap.cpp", "$root\src\Audio.cpp") + (Get-ChildItem "$root\src\loader\*.cpp").FullName
-cl /nologo /std:c++20 /EHsc /MD /Zi /DUNICODE /D_UNICODE /Fd"$out\host-test.pdb" /I"$root\src" /Fo"$out\" /Fe"$out\host-test.exe" "$PSScriptRoot\main.cpp" $src /link /DEBUG /OPT:REF /OPT:ICF WindowsApp.lib d3d11.lib dxgi.lib d3dcompiler.lib d2d1.lib dwrite.lib xaudio2.lib ws2_32.lib bcrypt.lib crypt32.lib
+cl /nologo /std:c++20 /EHsc /MD /Zi /DUNICODE /D_UNICODE /Fd"$out\host-test.pdb" /I"$root\src" /Fo"$out\" /Fe"$out\host-test.exe" "$PSScriptRoot\main.cpp" $src /link /DEBUG /OPT:REF /OPT:ICF WindowsApp.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib d2d1.lib dwrite.lib xaudio2.lib ws2_32.lib bcrypt.lib crypt32.lib
 exit $LASTEXITCODE

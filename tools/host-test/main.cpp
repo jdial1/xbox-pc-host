@@ -31,6 +31,12 @@
 #include <thread>
 #include <tlhelp32.h>
 
+// DXGI lists the high-performance GPU first for an exe that exports these (games do; a game's own exe
+// isn't the process here). Otherwise a PC with a software adapter at 0 hands it to games that take the
+// first adapter, as Mesa's d3d12 OpenGL does. The console has one GPU.
+extern "C" __declspec(dllexport) DWORD NvOptimusEnablement = 1;
+extern "C" __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
 namespace
 {
     // When the host's CRT is about to kill the process (abort, terminate, an invalid parameter to a

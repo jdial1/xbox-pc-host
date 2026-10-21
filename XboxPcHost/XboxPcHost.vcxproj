@@ -70,7 +70,7 @@
       <SubSystem>Windows</SubSystem>
       <!-- No IDL types, so there is no .winmd to package. -->
       <GenerateWindowsMetadata>false</GenerateWindowsMetadata>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;d2d1.lib;dwrite.lib;xaudio2.lib;ws2_32.lib;bcrypt.lib;crypt32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;d2d1.lib;dwrite.lib;xaudio2.lib;ws2_32.lib;bcrypt.lib;crypt32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -136,6 +136,8 @@
     <ClCompile Include="src\loader\Win32DxgiOutput.cpp" />
     <ClCompile Include="src\loader\Win32MMDevice.cpp" />
     <ClCompile Include="src\loader\Win32GameDlls.cpp" />
+    <ClCompile Include="src\loader\Win32D3D12.cpp" />
+    <ClCompile Include="src\loader\Win32OpenGl.cpp" />
     <ClCompile Include="src\loader\Win32Legacy.cpp" />
     <ClCompile Include="src\loader\Win32DSound.cpp" />
     <ClCompile Include="src\loader\Win32Registry.cpp" />

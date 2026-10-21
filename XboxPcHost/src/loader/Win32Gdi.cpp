@@ -198,7 +198,7 @@ namespace
         if (rop != kSrcCopy)
             HOST_LOG(L"BitBlt: raster op 0x%08lx treated as a plain copy", rop);
 
-        if (destination == GameWindowDc())
+        if (IsWindowDc(destination))
         {
             ShowBitmap(*from->selected);
             return TRUE;
@@ -232,7 +232,7 @@ namespace
     int WINAPI Shim_SetDIBitsToDevice(HDC destination, int, int, DWORD, DWORD, int, int, UINT, UINT lines,
         const void* bits, const BmiHeader* header, UINT)
     {
-        if (destination != GameWindowDc() || !bits || !header || header->bitCount != 32 || header->width <= 0 || lines == 0)
+        if (!IsWindowDc(destination) || !bits || !header || header->bitCount != 32 || header->width <= 0 || lines == 0)
             return 0;
         Bitmap view;
         view.width = header->width;
@@ -290,9 +290,76 @@ namespace
     DWORD WINAPI Shim_GdiError() { return GDI_ERROR; } // GetGlyphIndicesW, GetGlyphOutlineW
     UINT WINAPI Shim_GetOutlineTextMetricsW(HDC, UINT, void*) { return 0; }
 
-    // No OpenGL on the console; a game that asks gets no pixel format and moves on.
-    int WINAPI Shim_ChoosePixelFormat(HDC, const void*) { return 0; }
-    BOOL WINAPI Shim_GdiFalse() { return FALSE; } // SetPixelFormat, SwapBuffers
+    BOOL WINAPI Shim_GdiFalse() { return FALSE; }
+
+    // gdi32's pixel-format calls go to opengl32's wgl ones, as on Windows. The console has no OpenGL of
+    // its own, so they work only when the game brings one (Mesa's d3d12 driver); otherwise a game that
+    // asks gets no pixel format and moves on.
+    template <typename F> F GameOpenGl(const char* name)
+    {
+        HMODULE gl = GameDllNamed("opengl32");
+        return gl ? reinterpret_cast<F>(GameDllExport(gl, name, 0)) : nullptr;
+    }
+    int WINAPI Shim_ChoosePixelFormat(HDC dc, const PIXELFORMATDESCRIPTOR* pfd)
+    {
+        auto f = GameOpenGl<int(WINAPI*)(HDC, const PIXELFORMATDESCRIPTOR*)>("wglChoosePixelFormat");
+        return f ? f(dc, pfd) : 0;
+    }
+    int WINAPI Shim_DescribePixelFormat(HDC dc, int format, UINT size, PIXELFORMATDESCRIPTOR* pfd)
+    {
+        auto f = GameOpenGl<int(WINAPI*)(HDC, int, UINT, PIXELFORMATDESCRIPTOR*)>("wglDescribePixelFormat");
+        return f ? f(dc, format, size, pfd) : 0;
+    }
+    int WINAPI Shim_GetPixelFormat(HDC dc)
+    {
+        auto f = GameOpenGl<int(WINAPI*)(HDC)>("wglGetPixelFormat");
+        return f ? f(dc) : 0;
+    }
+    BOOL WINAPI Shim_SetPixelFormat(HDC dc, int format, const PIXELFORMATDESCRIPTOR* pfd)
+    {
+        auto f = GameOpenGl<BOOL(WINAPI*)(HDC, int, const PIXELFORMATDESCRIPTOR*)>("wglSetPixelFormat");
+        return f ? f(dc, format, pfd) : FALSE;
+    }
+    BOOL WINAPI Shim_SwapBuffers(HDC dc)
+    {
+        auto f = GameOpenGl<BOOL(WINAPI*)(HDC)>("wglSwapBuffers");
+        return f ? f(dc) : FALSE;
+    }
+
+    // Only the format query: with no bits, a bitmap's header (and BI_BITFIELDS masks) for its format.
+    // SDL finds the desktop's pixel format this way, on a 1x1 compatible bitmap.
+    int WINAPI Shim_GetDIBits(HDC, HBITMAP handle, UINT, UINT lines, void* bits, BITMAPINFO* info, UINT)
+    {
+        if (bits || !info || info->bmiHeader.biSize < sizeof(BITMAPINFOHEADER))
+            return 0;
+        int width = 1, height = 1, bitCount = 32;
+        {
+            std::lock_guard lock(g_lock);
+            if (Bitmap* b = AsBitmap(handle))
+            {
+                width = b->width;
+                height = b->height;
+                bitCount = b->bitCount;
+            }
+        }
+        auto& h = info->bmiHeader;
+        h.biWidth = width;
+        h.biHeight = height;
+        h.biPlanes = 1;
+        h.biBitCount = static_cast<WORD>(bitCount);
+        h.biSizeImage = static_cast<DWORD>((width * bitCount + 31) / 32 * 4 * height);
+        if (bitCount == 32)
+        {
+            h.biCompression = BI_BITFIELDS;
+            auto masks = reinterpret_cast<DWORD*>(info->bmiColors);
+            masks[0] = 0x00FF0000;
+            masks[1] = 0x0000FF00;
+            masks[2] = 0x000000FF;
+        }
+        else
+            h.biCompression = BI_RGB;
+        return static_cast<int>(lines ? lines : 1);
+    }
 }
 
 void SetGameDisplayForGdi(GameDisplay* display)
@@ -327,9 +394,12 @@ void RegisterGdi(Win32Layer& layer)
     SHIM(EnumFontFamiliesExW);
     SHIM(GetOutlineTextMetricsW);
     SHIM(ChoosePixelFormat);
+    SHIM(DescribePixelFormat);
+    SHIM(GetPixelFormat);
+    SHIM(SetPixelFormat);
+    SHIM(SwapBuffers);
+    SHIM(GetDIBits);
 #undef SHIM
     layer.Register("gdi32!GetGlyphIndicesW", reinterpret_cast<void*>(&Shim_GdiError));
     layer.Register("gdi32!GetGlyphOutlineW", reinterpret_cast<void*>(&Shim_GdiError));
-    layer.Register("gdi32!SetPixelFormat", reinterpret_cast<void*>(&Shim_GdiFalse));
-    layer.Register("gdi32!SwapBuffers", reinterpret_cast<void*>(&Shim_GdiFalse));
 }

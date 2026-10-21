@@ -20,6 +20,7 @@ namespace
     // IUnknown 0-2, IDXGIObject 3-6, IDXGIFactory 7-11, so these are the slots we replace.
     constexpr size_t kMakeWindowAssociation = 8, kCreateSwapChain = 10;
     constexpr size_t kCreateSwapChainForHwnd = 15; // IDXGIFactory1 ends at 13, then IsWindowedStereoEnabled
+    constexpr size_t kCreateSwapChainForComposition = 24; // after the stereo and occlusion status calls
     constexpr size_t kPresent = 8; // IDXGIDeviceSubObject ends at 7, then IDXGISwapChain starts with Present
     constexpr size_t kPresent1 = 22; // IDXGISwapChain1: after GetDesc1 .. GetHwnd, GetCoreWindow
     constexpr size_t kResizeBuffers = 13; // after GetBuffer, Set/GetFullscreenState and GetDesc
@@ -149,13 +150,18 @@ namespace
     }
 
     winrt::com_ptr<IDXGIAdapter> g_lastAdapter; // for the output a swapchain reports
+    std::set<std::wstring> g_adaptersLogged;
     void PatchAdapter(IUnknown* object)
     {
         winrt::com_ptr<IDXGIAdapter> adapter;
         if (!object || FAILED(object->QueryInterface(__uuidof(IDXGIAdapter), adapter.put_void())))
             return;
         Patch(adapter.get(), kAdapterSlots, { { kEnumOutputs, reinterpret_cast<void*>(&Hook_EnumOutputs) } });
+        DXGI_ADAPTER_DESC desc{};
+        adapter->GetDesc(&desc);
         std::lock_guard lock(g_lock);
+        if (g_adaptersLogged.insert(desc.Description).second)
+            HOST_LOG(L"game sees adapter: %s (%zu MB)", desc.Description, desc.DedicatedVideoMemory >> 20);
         g_lastAdapter = adapter;
     }
 
@@ -404,6 +410,78 @@ namespace
         return MakeGameSwapChain(device, *desc, desc->SampleDesc.Count, __uuidof(IDXGISwapChain1), reinterpret_cast<void**>(out));
     }
 
+    // Mesa's d3d12 OpenGL makes a composition swapchain for a pixel format with alpha (and puts it on its
+    // window through DirectComposition, below): it goes on the CoreWindow like any other.
+    HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForComposition(IDXGIFactory2*, IUnknown* device, const DXGI_SWAP_CHAIN_DESC1* desc,
+        IDXGIOutput*, IDXGISwapChain1** out)
+    {
+        if (!desc)
+            return DXGI_ERROR_INVALID_CALL;
+        return MakeGameSwapChain(device, *desc, desc->SampleDesc.Count, __uuidof(IDXGISwapChain1), reinterpret_cast<void**>(out));
+    }
+
+    // DirectComposition for the game: nothing to compose, since its composition swapchain is already the
+    // CoreWindow's. Every object takes every call and succeeds; the device's CreateTargetForHwnd and
+    // CreateVisual hand out more such objects. (x64 callers clean up their own arguments, so one stub
+    // serves methods of any signature.)
+    struct DCompStub
+    {
+        void* const* vtable;
+        std::atomic<ULONG> refs{ 1 };
+    };
+    constexpr size_t kDCompSlots = 64, kDCompCreateTargetForHwnd = 6, kDCompCreateVisual = 7;
+    HRESULT STDMETHODCALLTYPE DCompOk() { return S_OK; }
+    HRESULT STDMETHODCALLTYPE DCompQueryInterface(DCompStub* self, REFIID, void** out)
+    {
+        if (!out)
+            return E_POINTER;
+        ++self->refs;
+        *out = self;
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE DCompAddRef(DCompStub* self) { return ++self->refs; }
+    ULONG STDMETHODCALLTYPE DCompRelease(DCompStub* self)
+    {
+        ULONG left = --self->refs;
+        if (!left)
+            delete self;
+        return left;
+    }
+    std::array<void*, kDCompSlots> MakeDCompTable()
+    {
+        std::array<void*, kDCompSlots> t;
+        t.fill(reinterpret_cast<void*>(&DCompOk));
+        t[0] = reinterpret_cast<void*>(&DCompQueryInterface);
+        t[1] = reinterpret_cast<void*>(&DCompAddRef);
+        t[2] = reinterpret_cast<void*>(&DCompRelease);
+        return t;
+    }
+    std::array<void*, kDCompSlots> const g_dcompObjectTable = MakeDCompTable();
+    HRESULT STDMETHODCALLTYPE DCompCreateObject(DCompStub*, void** out)
+    {
+        if (!out)
+            return E_POINTER;
+        *out = new DCompStub{ g_dcompObjectTable.data() };
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DCompCreateTargetForHwnd(DCompStub* self, HWND, BOOL, void** out) { return DCompCreateObject(self, out); }
+    std::array<void*, kDCompSlots> MakeDCompDeviceTable()
+    {
+        std::array<void*, kDCompSlots> t = MakeDCompTable();
+        t[kDCompCreateTargetForHwnd] = reinterpret_cast<void*>(&DCompCreateTargetForHwnd);
+        t[kDCompCreateVisual] = reinterpret_cast<void*>(&DCompCreateObject);
+        return t;
+    }
+    std::array<void*, kDCompSlots> const g_dcompDeviceTable = MakeDCompDeviceTable();
+    HRESULT WINAPI Shim_DCompositionCreateDevice(IUnknown*, REFIID, void** out)
+    {
+        if (!out)
+            return E_POINTER;
+        *out = new DCompStub{ g_dcompDeviceTable.data() };
+        HOST_LOG(L"DirectComposition device for the game (a stand-in: its swapchain is on the CoreWindow)");
+        return S_OK;
+    }
+
     void PatchFactory(IDXGIFactory* factory)
     {
         // Slots past IDXGIFactory/1 are never called on such a factory (dxgi's one class implements them all).
@@ -414,7 +492,8 @@ namespace
             { kEnumAdapterByGpuPreference, reinterpret_cast<void*>(&Hook_EnumAdapterByGpuPreference) },
             { kMakeWindowAssociation, reinterpret_cast<void*>(&Hook_MakeWindowAssociation) },
             { kCreateSwapChain, reinterpret_cast<void*>(&Hook_CreateSwapChain) },
-            { kCreateSwapChainForHwnd, reinterpret_cast<void*>(&Hook_CreateSwapChainForHwnd) } });
+            { kCreateSwapChainForHwnd, reinterpret_cast<void*>(&Hook_CreateSwapChainForHwnd) },
+            { kCreateSwapChainForComposition, reinterpret_cast<void*>(&Hook_CreateSwapChainForComposition) } });
     }
 
     // A factory the game makes itself is a real one, patched like the device's.
@@ -518,6 +597,8 @@ void RegisterD3D(Win32Layer& layer)
     layer.Register("dxgi!CreateDXGIFactory", reinterpret_cast<void*>(&Shim_CreateDXGIFactory));
     layer.Register("dxgi!CreateDXGIFactory1", reinterpret_cast<void*>(&Shim_CreateDXGIFactory));
     layer.Register("dxgi!CreateDXGIFactory2", reinterpret_cast<void*>(&Shim_CreateDXGIFactory2));
+    for (const char* name : { "dcomp!DCompositionCreateDevice", "dcomp!DCompositionCreateDevice2", "dcomp!DCompositionCreateDevice3" })
+        layer.Register(name, reinterpret_cast<void*>(&Shim_DCompositionCreateDevice));
     // Run-time shader compilation is allowed in the app partition; every version name maps to the one we link.
     for (const char* dll : { "d3dcompiler_47", "d3dcompiler_46", "d3dcompiler_43" })
     {

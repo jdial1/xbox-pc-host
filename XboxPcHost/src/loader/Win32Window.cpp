@@ -820,7 +820,20 @@ namespace
     HWND WINAPI Shim_GetDlgItem(HWND, int) { return nullptr; }
     LRESULT WINAPI Shim_SendDlgItemMessageW(HWND, int, UINT, WPARAM, LPARAM) { return 0; }
 
-    HDC WINAPI Shim_GetDC(HWND) { return kDc; }
+    // A window's DC is its handle with bit 3 set (handles are 16 apart); no window is kDc.
+    HDC WINAPI Shim_GetDC(HWND hwnd)
+    {
+        return hwnd ? reinterpret_cast<HDC>(reinterpret_cast<uintptr_t>(hwnd) | 8) : kDc;
+    }
+    HWND WINAPI Shim_WindowFromDC(HDC dc)
+    {
+        auto v = reinterpret_cast<uintptr_t>(dc);
+        if (dc == kDc)
+            return g_main;
+        if ((v & 0xF) == 8 && v >= 0x00010100 && v < g_nextHwnd)
+            return reinterpret_cast<HWND>(v & ~uintptr_t(0xF));
+        return nullptr;
+    }
     int WINAPI Shim_ReleaseDC(HWND, HDC) { return 1; }
     int WINAPI Shim_ShowCursor(BOOL) { return 0; }
     BOOL WINAPI Shim_ShowWindow(HWND, int) { return FALSE; } // "was not visible before"
@@ -895,6 +908,7 @@ void BroadcastGameMessage(UINT message, WPARAM wParam, LPARAM lParam)
 UINT GameScreenWidth() { return Width(); }
 UINT GameScreenHeight() { return Height(); }
 HDC GameWindowDc() { return kDc; }
+bool IsWindowDc(HDC dc) { return dc == kDc || Shim_WindowFromDC(dc) != nullptr; }
 HMONITOR GameMonitor() { return kMonitor; }
 
 void SetGameDisplay(GameDisplay* display)
@@ -999,6 +1013,7 @@ void RegisterWindow(Win32Layer& layer)
     reg({ "LoadImageA" }, FN(Shim_LoadImageA));
     reg({ "GetDC", "GetWindowDC" }, FN(Shim_GetDC));
     reg({ "ReleaseDC" }, FN(Shim_ReleaseDC));
+    reg({ "WindowFromDC" }, FN(Shim_WindowFromDC));
     reg({ "ShowCursor" }, FN(Shim_ShowCursor));
     reg({ "ShowWindow" }, FN(Shim_ShowWindow));
     reg({ "MessageBoxA" }, FN(Shim_MessageBoxA));

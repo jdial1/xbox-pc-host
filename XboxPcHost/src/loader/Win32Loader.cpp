@@ -60,6 +60,15 @@ namespace
         }
         std::string narrow = Narrow(wpath ? wpath : L"");
         const char* path = wpath ? narrow.c_str() : nullptr;
+        // GPU vendor driver libraries: a game that finds one calls into it unchecked (Recoil's Optimus
+        // profile calls nvapi_QueryInterface), and the console has none.
+        std::string name = path ? NormalizeDllName(ModuleName(path).c_str()) : "";
+        if (name == "nvapi64" || name == "nvapi" || name == "atiadlxx" || name == "atiadlxy" || name == "amd_ags_x64")
+        {
+            HOST_LOG(L"LoadLibrary %S -> not here (GPU vendor library)", path);
+            SetLastError(ERROR_MOD_NOT_FOUND);
+            return nullptr;
+        }
         HMODULE handle = FakeModule(path ? ModuleName(path).c_str() : "");
         HOST_LOG(L"LoadLibrary %S -> fake 0x%llx", path ? path : "(null)", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)));
         return handle;
@@ -107,6 +116,8 @@ namespace
             bool ordinalOnly = reinterpret_cast<uintptr_t>(name) < 0x10000;
             void* fn = GameDllExport(module, ordinalOnly ? nullptr : name,
                 ordinalOnly ? static_cast<uint16_t>(reinterpret_cast<uintptr_t>(name)) : 0);
+            if (!ordinalOnly)
+                fn = AdjustGameOpenGlExport(module, name, fn);
             if (!fn)
             {
                 if (ordinalOnly)
