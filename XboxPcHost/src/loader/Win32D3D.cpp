@@ -47,9 +47,23 @@ namespace
     {
         int reports = 0;
         ULONGLONG reported = 0;
-        while (reports < 6)
+        for (int tick = 0;; ++tick)
         {
             Sleep(100);
+            // On request: a dump-stacks.txt dropped next to host.log (Device Portal) samples every game
+            // thread once, for a hang that never presents again.
+            if (tick % 20 == 0)
+            {
+                std::filesystem::path request = host::log::Folder() / L"dump-stacks.txt";
+                std::error_code ec;
+                if (std::filesystem::exists(request, ec))
+                {
+                    std::filesystem::remove(request, ec);
+                    LogGameThreadStacks(L"requested (dump-stacks.txt)");
+                }
+            }
+            if (reports >= 6)
+                continue;
             ULONGLONG last = g_lastPresent, now = GetTickCount64();
             if (last && now - last > 400 && reported != last && now - g_firstPresent > 120000)
             {

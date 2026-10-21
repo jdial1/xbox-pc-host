@@ -5,11 +5,13 @@ namespace
 {
     std::mutex g_lock;
     FILE* g_file = nullptr;
+    std::filesystem::path g_folder;
 }
 
 void host::log::Init(std::filesystem::path const& file)
 {
     std::lock_guard guard(g_lock);
+    g_folder = file.parent_path();
     if (g_file) fclose(g_file);
     // Keep the previous run's log: after a crash the new run would otherwise overwrite the evidence.
     std::error_code ec;
@@ -17,6 +19,12 @@ void host::log::Init(std::filesystem::path const& file)
         std::filesystem::rename(file, std::filesystem::path(file).replace_filename(L"host.prev.log"), ec);
     // Shared for reading so the log can be tailed while the app runs.
     g_file = _wfsopen(file.c_str(), L"w, ccs=UTF-8", _SH_DENYWR);
+}
+
+std::filesystem::path host::log::Folder()
+{
+    std::lock_guard guard(g_lock);
+    return g_folder;
 }
 
 void host::log::Write(const wchar_t* fmt, ...)

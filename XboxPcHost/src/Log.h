@@ -6,6 +6,7 @@ namespace host::log
 {
     void Init(std::filesystem::path const& file);
     void Write(const wchar_t* fmt, ...);
+    std::filesystem::path Folder(); // where host.log is
 }
 
 #define HOST_LOG(...) ::host::log::Write(__VA_ARGS__)
