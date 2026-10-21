@@ -77,6 +77,7 @@ Win32Layer::Win32Layer()
     RegisterGdiPlus(*this);
     RegisterDSound(*this);
     RegisterLegacy(*this); // last: replaces pass-throughs of the same names
+    RegisterRegistry(*this); // HKCU kept by the host; replaces the registry pass-throughs
 }
 
 void Win32Layer::Register(const char* key, void* fn)

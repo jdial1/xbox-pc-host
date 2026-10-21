@@ -137,6 +137,7 @@
     <ClCompile Include="src\loader\Win32GameDlls.cpp" />
     <ClCompile Include="src\loader\Win32Legacy.cpp" />
     <ClCompile Include="src\loader\Win32DSound.cpp" />
+    <ClCompile Include="src\loader\Win32Registry.cpp" />
   </ItemGroup>
   <ItemGroup>
     <AppxManifest Include="Package.appxmanifest">
