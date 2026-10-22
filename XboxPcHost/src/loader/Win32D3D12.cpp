@@ -18,6 +18,32 @@ namespace
     std::atomic<CreateFenceFn> g_createFence{ nullptr };
     std::atomic<bool> g_sharedLogged{ false };
 
+    // The console's app D3D12 (feature level 11_0) reports typed UAV stores but no typed UAV loads for the
+    // formats ARB_shader_image_load_store needs, so Mesa's GL stops at 4.1 and GL4 games' shaders fail. The
+    // GPU does typed loads (RDNA2); a format with typed stores is reported with typed loads too.
+    constexpr size_t kCheckFeatureSupport = 13;
+    using CheckFeatureSupportFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, D3D12_FEATURE, void*, UINT);
+    std::atomic<CheckFeatureSupportFn> g_checkFeatureSupport{ nullptr };
+    std::atomic<int> g_typedLoadsAdded{ 0 };
+
+    HRESULT STDMETHODCALLTYPE Hook_CheckFeatureSupport(ID3D12Device* self, D3D12_FEATURE feature, void* data, UINT size)
+    {
+        HRESULT hr = g_checkFeatureSupport.load()(self, feature, data, size);
+        if (SUCCEEDED(hr) && feature == D3D12_FEATURE_FORMAT_SUPPORT && size >= sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT))
+        {
+            auto* s = static_cast<D3D12_FEATURE_DATA_FORMAT_SUPPORT*>(data);
+            if ((s->Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) &&
+                (s->Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) && !(s->Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD))
+            {
+                s->Support2 |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD;
+                if (g_typedLoadsAdded++ == 0)
+                    HOST_LOG(L"D3D12: reporting typed UAV loads for formats with typed UAV stores (first: format %d)",
+                        static_cast<int>(s->Format));
+            }
+        }
+        return hr;
+    }
+
     // The app sandbox can't make shared fences (Mesa asks for one for its screen); an unshared fence works
     // the same within the process.
     HRESULT STDMETHODCALLTYPE Hook_CreateFence(ID3D12Device* self, UINT64 value, D3D12_FENCE_FLAGS flags, REFIID iid, void** out)
@@ -87,8 +113,10 @@ namespace
         HRESULT hr = D3D12CreateDevice(adapter, level, iid, out);
         if (SUCCEEDED(hr) && out && *out)
         {
-            void** original = PatchComTable(*out, 128, { { kCreateFence, reinterpret_cast<void*>(&Hook_CreateFence) } });
+            void** original = PatchComTable(*out, 128, { { kCreateFence, reinterpret_cast<void*>(&Hook_CreateFence) },
+                { kCheckFeatureSupport, reinterpret_cast<void*>(&Hook_CheckFeatureSupport) } });
             g_createFence = reinterpret_cast<CreateFenceFn>(original[kCreateFence]);
+            g_checkFeatureSupport = reinterpret_cast<CheckFeatureSupportFn>(original[kCheckFeatureSupport]);
             std::lock_guard lock(g_deviceLock);
             if (!g_device)
             {
