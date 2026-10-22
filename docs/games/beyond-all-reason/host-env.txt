@@ -1,0 +1,3 @@
+# Mesa: the console's D3D12 (feature level 11_0) keeps Mesa below GL 4.3; BAR's GL4 path needs it.
+MESA_GL_VERSION_OVERRIDE=4.6COMPAT
+MESA_GLSL_VERSION_OVERRIDE=460

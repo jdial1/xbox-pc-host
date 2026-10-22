@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <fstream>
 #include "GameRuntime.h"
 #include "Log.h"
 #include "Audio.h"
@@ -233,6 +234,24 @@ namespace
                 HOST_LOG(L"controller: the game's own mapping (host-controls.txt)");
             if (m_profile == InputProfile::Pointer)
                 HOST_LOG(L"controller: pointer profile (sticks move the pointer, A/B click)");
+
+            // host-env.txt next to the exe: KEY=VALUE lines set in the process environment before any of the
+            // game's code loads (a game DLL's own CRT copies the environment when it starts).
+            {
+                std::wifstream env(exe.parent_path() / L"host-env.txt");
+                std::wstring line;
+                while (std::getline(env, line))
+                {
+                    size_t eq = line.find(L'=');
+                    if (line.empty() || line[0] == L'#' || eq == std::wstring::npos || eq == 0)
+                        continue;
+                    std::wstring key = line.substr(0, eq), value = line.substr(eq + 1);
+                    while (!value.empty() && (value.back() == L'\r' || value.back() == L' '))
+                        value.pop_back();
+                    SetEnvironmentVariableW(key.c_str(), value.c_str());
+                    HOST_LOG(L"environment: %s=%s", key.c_str(), value.c_str());
+                }
+            }
 
             auto image = std::make_unique<PeImage>();
             std::wstring error;
