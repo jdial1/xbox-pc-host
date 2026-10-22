@@ -86,6 +86,9 @@ void SetGameProcess(void* imageBase, std::filesystem::path const& exe, std::file
 std::filesystem::path GameExePath(); // the running game's exe
 void KeepHostFaultHandlerFirst();    // after a game adds a vectored handler
 void RegisterD3D12(Win32Layer& layer);
+void RegisterMemStats(Win32Layer& layer);
+void NoteGameVirtualAlloc(const void* caller, void* p, SIZE_T size, DWORD type); // Win32MemStats.cpp
+uint64_t GameGpuMemoryUsage(); // the game's adapter's local video memory in use, 0 if unknown
 // Points a COM object at a copy of its vtable with slots replaced; returns the original table.
 void** PatchComTable(void* object, size_t slots, std::initializer_list<std::pair<size_t, void*>> replacements);
 void RegisterLegacy(Win32Layer& layer);

@@ -182,8 +182,13 @@ namespace
     LPVOID WINAPI Shim_VirtualAlloc(LPVOID address, SIZE_T size, DWORD type, DWORD protect)
     {
         if (!IsRwx(protect))
-            return VirtualAllocFromApp(address, size, type, protect);
+        {
+            void* p = VirtualAllocFromApp(address, size, type, protect);
+            NoteGameVirtualAlloc(_ReturnAddress(), p, size, type);
+            return p;
+        }
         void* p = VirtualAllocFromApp(address, size, type, WithoutExecute(protect));
+        NoteGameVirtualAlloc(_ReturnAddress(), p, size, type);
         if (p)
             RememberRwx(p, size);
         return p;

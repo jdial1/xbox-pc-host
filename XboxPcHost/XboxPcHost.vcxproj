@@ -138,6 +138,7 @@
     <ClCompile Include="src\loader\Win32GameDlls.cpp" />
     <ClCompile Include="src\loader\Win32D3D12.cpp" />
     <ClCompile Include="src\loader\Win32OpenGl.cpp" />
+    <ClCompile Include="src\loader\Win32MemStats.cpp" />
     <ClCompile Include="src\loader\Win32Legacy.cpp" />
     <ClCompile Include="src\loader\Win32DSound.cpp" />
     <ClCompile Include="src\loader\Win32Registry.cpp" />

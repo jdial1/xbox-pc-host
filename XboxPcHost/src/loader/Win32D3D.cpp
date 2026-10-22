@@ -635,3 +635,18 @@ void RegisterD3D(Win32Layer& layer)
         layer.Register((d + "D3DStripShader").c_str(), reinterpret_cast<void*>(&D3DStripShader));
     }
 }
+
+uint64_t GameGpuMemoryUsage()
+{
+    winrt::com_ptr<IDXGIAdapter> adapter;
+    {
+        std::lock_guard lock(g_lock);
+        adapter = g_lastAdapter;
+    }
+    winrt::com_ptr<IDXGIAdapter3> adapter3;
+    DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+    if (!adapter || FAILED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), adapter3.put_void())) ||
+        FAILED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+        return 0;
+    return info.CurrentUsage;
+}
