@@ -59,7 +59,8 @@ namespace
         if (!code.pShaderBytecode || !code.BytecodeLength)
             return;
         std::filesystem::path file = host::log::Folder() / (L"pso-fail-" + std::to_wstring(n) + L"-" + stage + L".dxil");
-        if (FILE* f = _wfopen(file.c_str(), L"wb"))
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, file.c_str(), L"wb") == 0 && f)
         {
             fwrite(code.pShaderBytecode, 1, code.BytecodeLength, f);
             fclose(f);
