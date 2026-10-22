@@ -44,6 +44,60 @@ namespace
         return hr;
     }
 
+    // A pipeline the runtime refuses: logged, and its shaders (DXIL) saved next to host.log as
+    // pso-fail-<n>-<stage>.dxil for `dxc -dumpbin`, to see which feature the console's D3D12 refused.
+    // Mesa exits the process when one fails.
+    constexpr size_t kCreateGraphicsPipelineState = 10, kCreatePipelineState = 47; // ID3D12Device, ID3D12Device2
+    using CreateGraphicsPsoFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, const D3D12_GRAPHICS_PIPELINE_STATE_DESC*, REFIID, void**);
+    using CreatePsoFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, const void*, REFIID, void**);
+    std::atomic<CreateGraphicsPsoFn> g_createGraphicsPso{ nullptr };
+    std::atomic<CreatePsoFn> g_createPso{ nullptr };
+    std::atomic<int> g_psoFailures{ 0 };
+
+    void SaveShader(int n, const wchar_t* stage, D3D12_SHADER_BYTECODE const& code)
+    {
+        if (!code.pShaderBytecode || !code.BytecodeLength)
+            return;
+        std::filesystem::path file = host::log::Folder() / (L"pso-fail-" + std::to_wstring(n) + L"-" + stage + L".dxil");
+        if (FILE* f = _wfopen(file.c_str(), L"wb"))
+        {
+            fwrite(code.pShaderBytecode, 1, code.BytecodeLength, f);
+            fclose(f);
+        }
+    }
+
+    HRESULT STDMETHODCALLTYPE Hook_CreateGraphicsPipelineState(ID3D12Device* self, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc,
+        REFIID iid, void** out)
+    {
+        HRESULT hr = g_createGraphicsPso.load()(self, desc, iid, out);
+        if (FAILED(hr) && desc)
+        {
+            int n = g_psoFailures++;
+            HOST_LOG(L"D3D12: CreateGraphicsPipelineState failed 0x%08x (failure %d): VS %zu PS %zu GS %zu HS %zu DS %zu bytes, "
+                     L"%u render targets, format0 %d, depth format %d, samples %u",
+                static_cast<unsigned>(hr), n, desc->VS.BytecodeLength, desc->PS.BytecodeLength, desc->GS.BytecodeLength,
+                desc->HS.BytecodeLength, desc->DS.BytecodeLength, desc->NumRenderTargets,
+                static_cast<int>(desc->RTVFormats[0]), static_cast<int>(desc->DSVFormat), desc->SampleDesc.Count);
+            if (n < 4)
+            {
+                SaveShader(n, L"vs", desc->VS);
+                SaveShader(n, L"ps", desc->PS);
+                SaveShader(n, L"gs", desc->GS);
+                SaveShader(n, L"hs", desc->HS);
+                SaveShader(n, L"ds", desc->DS);
+            }
+        }
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE Hook_CreatePipelineState(ID3D12Device* self, const void* desc, REFIID iid, void** out)
+    {
+        HRESULT hr = g_createPso.load()(self, desc, iid, out);
+        if (FAILED(hr))
+            HOST_LOG(L"D3D12: CreatePipelineState (stream) failed 0x%08x", static_cast<unsigned>(hr));
+        return hr;
+    }
+
     // The app sandbox can't make shared fences (Mesa asks for one for its screen); an unshared fence works
     // the same within the process.
     HRESULT STDMETHODCALLTYPE Hook_CreateFence(ID3D12Device* self, UINT64 value, D3D12_FENCE_FLAGS flags, REFIID iid, void** out)
@@ -113,10 +167,22 @@ namespace
         HRESULT hr = D3D12CreateDevice(adapter, level, iid, out);
         if (SUCCEEDED(hr) && out && *out)
         {
-            void** original = PatchComTable(*out, 128, { { kCreateFence, reinterpret_cast<void*>(&Hook_CreateFence) },
-                { kCheckFeatureSupport, reinterpret_cast<void*>(&Hook_CheckFeatureSupport) } });
+            // Slot 47 exists only on an ID3D12Device2 (and later).
+            winrt::com_ptr<ID3D12Device2> device2;
+            static_cast<IUnknown*>(*out)->QueryInterface(__uuidof(ID3D12Device2), device2.put_void());
+            void** original = device2
+                ? PatchComTable(*out, 128, { { kCreateFence, reinterpret_cast<void*>(&Hook_CreateFence) },
+                      { kCheckFeatureSupport, reinterpret_cast<void*>(&Hook_CheckFeatureSupport) },
+                      { kCreateGraphicsPipelineState, reinterpret_cast<void*>(&Hook_CreateGraphicsPipelineState) },
+                      { kCreatePipelineState, reinterpret_cast<void*>(&Hook_CreatePipelineState) } })
+                : PatchComTable(*out, 128, { { kCreateFence, reinterpret_cast<void*>(&Hook_CreateFence) },
+                      { kCheckFeatureSupport, reinterpret_cast<void*>(&Hook_CheckFeatureSupport) },
+                      { kCreateGraphicsPipelineState, reinterpret_cast<void*>(&Hook_CreateGraphicsPipelineState) } });
             g_createFence = reinterpret_cast<CreateFenceFn>(original[kCreateFence]);
             g_checkFeatureSupport = reinterpret_cast<CheckFeatureSupportFn>(original[kCheckFeatureSupport]);
+            g_createGraphicsPso = reinterpret_cast<CreateGraphicsPsoFn>(original[kCreateGraphicsPipelineState]);
+            if (device2)
+                g_createPso = reinterpret_cast<CreatePsoFn>(original[kCreatePipelineState]);
             std::lock_guard lock(g_deviceLock);
             if (!g_device)
             {
