@@ -5,6 +5,7 @@
 
 #include <map>
 #include <d3dcompiler.h>
+#include <d3d12.h>
 #include <dxgi1_6.h>
 #include <intrin.h>
 
@@ -365,12 +366,26 @@ namespace
     // The game has no HWND association to make.
     HRESULT STDMETHODCALLTYPE Hook_MakeWindowAssociation(IDXGIFactory*, HWND, UINT) { return S_OK; }
 
+    // A D3D12 queue's device's removed reason (S_OK while it lives), or S_FALSE for a D3D11 device.
+    HRESULT QueueDeviceState(IUnknown* device)
+    {
+        winrt::com_ptr<ID3D12CommandQueue> queue;
+        if (FAILED(device->QueryInterface(__uuidof(ID3D12CommandQueue), queue.put_void())))
+            return S_FALSE;
+        winrt::com_ptr<ID3D12Device> d3d12;
+        if (FAILED(queue->GetDevice(__uuidof(ID3D12Device), d3d12.put_void())))
+            return E_FAIL;
+        return d3d12->GetDeviceRemovedReason();
+    }
+
     // Every way a game makes a swapchain ends here: it is made on the CoreWindow, in the flip model
     // a CoreWindow needs, and its Present and ResizeBuffers are hooked. Returns the game's interface.
+
     HRESULT MakeGameSwapChain(IUnknown* device, DXGI_SWAP_CHAIN_DESC1 d, UINT sampleCount, REFIID iid, void** out)
     {
         if (!g_display || !device || !out)
             return DXGI_ERROR_INVALID_CALL;
+        HRESULT before = QueueDeviceState(device);
         d.Width = d.Width ? d.Width : g_display->Width();
         d.Height = d.Height ? d.Height : g_display->Height();
         d.Format = FlipFormat(d.Format);
@@ -393,6 +408,9 @@ namespace
             return hr;
         }
         HOST_LOG(L"game swapchain %ux%u created on CoreWindow", d.Width, d.Height);
+        if (before != S_FALSE) // a D3D12 queue: was the device alive before, and is it now?
+            HOST_LOG(L"  D3D12 device removed reason before 0x%08x, after 0x%08x", static_cast<unsigned>(before),
+                static_cast<unsigned>(QueueDeviceState(device)));
 
         // One vtable serves IDXGISwapChain and its later versions, so patching it covers all of them.
         void** original = Patch(swapChain1, kSwapChainSlots, {
@@ -530,6 +548,11 @@ namespace
                 PatchFactory(factory.get());
         }
         HOST_LOG(L"CreateDXGIFactory -> 0x%08x", static_cast<unsigned>(hr));
+        // The watchdog serves dump-stacks.txt too, so it runs from here, not only from the first frame:
+        // a game can hang before it ever presents.
+        if (!g_watchdogStarted.exchange(true))
+            if (HANDLE t = CreateThread(nullptr, 0, &StallWatchdog, nullptr, 0, nullptr))
+                CloseHandle(t);
         return hr;
     }
 
