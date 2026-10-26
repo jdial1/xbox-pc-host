@@ -205,6 +205,29 @@ namespace
         return it != g_windows.end() ? &it->second : nullptr;
     }
 
+    // WH_CALLWNDPROC hooks (Mesa's OpenGL watches its windows this way), per thread or for all (thread 0).
+    // CWPSTRUCT and HOOKPROC are desktop-only in the headers; the layouts are the same.
+    struct CallWndProcParams { LPARAM lParam; WPARAM wParam; UINT message; HWND hwnd; };
+    using CallWndProcHook = LRESULT(CALLBACK*)(int, WPARAM, LPARAM);
+    struct Hook { HHOOK handle; CallWndProcHook proc; DWORD thread; };
+    std::mutex g_hookLock;
+    std::vector<Hook> g_hooks;
+    std::atomic<uintptr_t> g_nextHook{ 0x00030000 };
+
+    void CallHooks(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        std::vector<CallWndProcHook> procs;
+        {
+            std::lock_guard lock(g_hookLock);
+            DWORD self = GetCurrentThreadId();
+            for (auto const& h : g_hooks)
+                if (!h.thread || h.thread == self) procs.push_back(h.proc);
+        }
+        CallWndProcParams params{ lParam, wParam, message, hwnd };
+        for (auto proc : procs)
+            proc(0 /* HC_ACTION */, 1 /* sent by this thread */, reinterpret_cast<LPARAM>(&params));
+    }
+
     // Window procedures run on the calling thread, without the lock: they call back in freely.
     LRESULT Call(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
@@ -220,6 +243,7 @@ namespace
             (message == 0x0112 && (wParam & 0xFFF0) == 0xF060))
             HOST_LOG(L"window %p gets message 0x%04X (wParam 0x%llx)", static_cast<void*>(hwnd), message,
                 static_cast<unsigned long long>(wParam));
+        CallHooks(hwnd, message, wParam, lParam);
         return proc ? proc(hwnd, message, wParam, lParam) : 0;
     }
 
@@ -803,8 +827,30 @@ namespace
     UINT WINAPI Shim_GetRawInputDeviceList(void*, PUINT count, UINT) { if (count) *count = 0; return 0; }
     UINT WINAPI Shim_RawInputNone() { return static_cast<UINT>(-1); } // GetRawInputData, GetRawInputDeviceInfo
 
-    // Hooks into other windows aren't possible in the app partition; games carry on without them.
-    HHOOK WINAPI Shim_SetWindowsHookEx(int, void*, HINSTANCE, DWORD) { SetLastError(ERROR_ACCESS_DENIED); return nullptr; }
+    // WH_CALLWNDPROC hooks are kept and called before a game window's procedure (see CallHooks). Other
+    // hooks (keyboard, mouse, other processes) aren't possible in the app partition; games carry on without.
+    HHOOK WINAPI Shim_SetWindowsHookEx(int id, void* proc, HINSTANCE, DWORD thread)
+    {
+        constexpr int kWhCallWndProc = 4;
+        if (id != kWhCallWndProc || !proc)
+        {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return nullptr;
+        }
+        HHOOK handle = reinterpret_cast<HHOOK>(g_nextHook += 0x10);
+        std::lock_guard lock(g_hookLock);
+        g_hooks.push_back({ handle, reinterpret_cast<CallWndProcHook>(proc), thread });
+        if (g_hooks.size() <= 4)
+            HOST_LOG(L"WH_CALLWNDPROC hook for thread %lu", thread);
+        return handle;
+    }
+    BOOL WINAPI Shim_UnhookWindowsHookEx(HHOOK handle)
+    {
+        std::lock_guard lock(g_hookLock);
+        auto it = std::find_if(g_hooks.begin(), g_hooks.end(), [&](Hook const& h) { return h.handle == handle; });
+        if (it != g_hooks.end()) g_hooks.erase(it);
+        return TRUE;
+    }
 
     // There is no clipboard.
     BOOL WINAPI Shim_OpenClipboard(HWND) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
@@ -1001,6 +1047,7 @@ void RegisterWindow(Win32Layer& layer)
     reg({ "GetRawInputDeviceList" }, FN(Shim_GetRawInputDeviceList));
     reg({ "GetRawInputData", "GetRawInputDeviceInfoA", "GetRawInputDeviceInfoW" }, FN(Shim_RawInputNone));
     reg({ "SetWindowsHookExW", "SetWindowsHookExA" }, FN(Shim_SetWindowsHookEx));
+    reg({ "UnhookWindowsHookEx" }, FN(Shim_UnhookWindowsHookEx));
     reg({ "OpenClipboard" }, FN(Shim_OpenClipboard));
     reg({ "IsClipboardFormatAvailable" }, FN(Shim_IsClipboardFormatAvailable));
     reg({ "GetClipboardData", "SetClipboardData" }, FN(Shim_GetClipboardData));
@@ -1022,7 +1069,7 @@ void RegisterWindow(Win32Layer& layer)
     reg({ "BringWindowToTop", "ClipCursor", "SetForegroundWindow", "SetWindowPos", "SetWindowTextA", "SetWindowTextW",
         "ValidateRect", "ReleaseCapture", "TrackMouseEvent", "CloseClipboard", "SetDlgItemTextW", "UpdateWindow",
         "InvalidateRect", "UnregisterClassW", "UnregisterClassA", "DestroyIcon", "DestroyCursor", "KillTimer",
-        "UnregisterDeviceNotification", "RegisterRawInputDevices", "UnhookWindowsHookEx", "ChangeWindowMessageFilter",
+        "UnregisterDeviceNotification", "RegisterRawInputDevices", "ChangeWindowMessageFilter",
         "ChangeWindowMessageFilterEx", "FlashWindowEx", "SetLayeredWindowAttributes", "SetWindowRgn", "AttachThreadInput",
         "EndDialog", "MoveWindow" }, FN(Shim_True));
     // Answered "nothing": no text, no menu, not minimized, no previous cursor, no hook chain, no clipboard.

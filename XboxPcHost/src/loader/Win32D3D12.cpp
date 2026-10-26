@@ -172,6 +172,31 @@ namespace
             static_cast<unsigned>(fl.MaxSupportedFeatureLevel), static_cast<unsigned>(sm.HighestShaderModel),
             static_cast<unsigned>(smhr), static_cast<int>(o.ResourceBindingTier), o.TypedUAVLoadAdditionalFormats,
             static_cast<int>(o.TiledResourcesTier), o.ROVsSupported, static_cast<int>(o.ConservativeRasterizationTier));
+        // Render-target and depth formats GL framebuffers use, with their multisample counts (Mesa builds a
+        // multisampled renderbuffer only for counts the device has quality levels for).
+        struct Named { DXGI_FORMAT format; const wchar_t* name; };
+        Named rts[] = { { DXGI_FORMAT_R8G8B8A8_UNORM, L"RGBA8" }, { DXGI_FORMAT_B8G8R8A8_UNORM, L"BGRA8" },
+            { DXGI_FORMAT_R16G16B16A16_FLOAT, L"RGBA16F" }, { DXGI_FORMAT_R10G10B10A2_UNORM, L"RGB10A2" },
+            { DXGI_FORMAT_D24_UNORM_S8_UINT, L"D24S8" }, { DXGI_FORMAT_D32_FLOAT_S8X24_UINT, L"D32FS8" },
+            { DXGI_FORMAT_D32_FLOAT, L"D32F" }, { DXGI_FORMAT_D16_UNORM, L"D16" }, { DXGI_FORMAT_R24G8_TYPELESS, L"R24G8 typeless" } };
+        for (auto const& f : rts)
+        {
+            D3D12_FEATURE_DATA_FORMAT_SUPPORT s{ f.format };
+            HRESULT hr = device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &s, sizeof(s));
+            std::wstring line = std::wstring(L"  format ") + f.name + L": support1 0x" ;
+            wchar_t hex[16];
+            swprintf_s(hex, L"%08x", static_cast<unsigned>(s.Support1));
+            line += hex;
+            line += FAILED(hr) ? L" (query failed)" : L"";
+            line += L"; samples:";
+            for (UINT n : { 2u, 4u, 8u })
+            {
+                D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS q{ f.format, n, D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE, 0 };
+                HRESULT qh = device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &q, sizeof(q));
+                line += L" " + std::to_wstring(n) + L"x=" + (FAILED(qh) ? std::wstring(L"fail") : std::to_wstring(q.NumQualityLevels));
+            }
+            HOST_LOG(L"%s", line.c_str());
+        }
         // ARB_shader_image_load_store's formats, which Mesa checks for typed UAV load and store.
         DXGI_FORMAT formats[] = { DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_SNORM, DXGI_FORMAT_R32G32_FLOAT,
             DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R32G32_SINT, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R10G10B10A2_UINT,

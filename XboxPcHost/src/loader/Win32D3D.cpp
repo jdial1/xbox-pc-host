@@ -541,6 +541,74 @@ namespace
     winrt::com_ptr<ID3D12CommandQueue> g_lastGameQueue;
     std::atomic<int> g_gameSwapChains{ 0 };
 
+    // Whether each game swapchain still exists: a sentinel in its private data is released when DXGI
+    // destroys it.
+    constexpr int kTrackedSwapChains = 16;
+    std::atomic<bool> g_swapChainAlive[kTrackedSwapChains]{};
+    std::atomic<ULONGLONG> g_swapChainBorn[kTrackedSwapChains]{};
+    constexpr GUID kSentinelGuid = { 0x6f1c2a7e, 0x3b5d, 0x4e21, { 0x9a, 0x44, 0x1d, 0x7e, 0x52, 0xc0, 0x8b, 0x13 } };
+    struct SwapChainSentinel final : IUnknown
+    {
+        std::atomic<ULONG> refs{ 1 };
+        int index;
+        explicit SwapChainSentinel(int i) : index(i) {}
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override
+        {
+            if (!out) return E_POINTER;
+            if (iid == __uuidof(IUnknown)) { *out = static_cast<IUnknown*>(this); AddRef(); return S_OK; }
+            *out = nullptr;
+            return E_NOINTERFACE;
+        }
+        ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+        ULONG STDMETHODCALLTYPE Release() override
+        {
+            ULONG n = --refs;
+            if (n == 0)
+            {
+                g_swapChainAlive[index] = false;
+                HOST_LOG(L"game swapchain %d destroyed (lived %llu ms)", index + 1,
+                    static_cast<unsigned long long>(GetTickCount64() - g_swapChainBorn[index]));
+                delete this;
+            }
+            return n;
+        }
+    };
+
+    void TrackSwapChain(IDXGISwapChain1* swapChain, int index)
+    {
+        if (index < 0 || index >= kTrackedSwapChains)
+            return;
+        auto* sentinel = new SwapChainSentinel(index);
+        g_swapChainBorn[index] = GetTickCount64();
+        g_swapChainAlive[index] = true;
+        if (FAILED(swapChain->SetPrivateDataInterface(kSentinelGuid, sentinel)))
+            g_swapChainAlive[index] = false; // can't tell
+        sentinel->Release(); // the swapchain's private data holds it now
+    }
+
+    // Waits up to 1.5 s for the earlier game swapchains to be destroyed; logs which were still alive.
+    void WaitForEarlierSwapChains(int index)
+    {
+        ULONGLONG t0 = GetTickCount64();
+        auto alive = [&] {
+            std::wstring list;
+            for (int i = 0; i < index && i < kTrackedSwapChains; ++i)
+                if (g_swapChainAlive[i]) list += L" " + std::to_wstring(i + 1);
+            return list;
+        };
+        std::wstring before = alive(), now = before;
+        while (!now.empty() && GetTickCount64() - t0 < 1500)
+        {
+            Sleep(10);
+            now = alive();
+        }
+        if (!before.empty())
+            HOST_LOG(L"  before game swapchain %d: earlier swapchain(s)%s still alive; after %llu ms:%s", index + 1,
+                before.c_str(), static_cast<unsigned long long>(GetTickCount64() - t0), now.empty() ? L" all gone" : now.c_str());
+        else
+            HOST_LOG(L"  before game swapchain %d: earlier swapchains all destroyed", index + 1);
+    }
+
     void BeforeNextSwapChain(IUnknown* device)
     {
         winrt::com_ptr<ID3D12CommandQueue> queue, last;
@@ -549,10 +617,11 @@ namespace
             std::lock_guard lock(g_lock);
             last = g_lastGameQueue;
         }
-        if (g_gameSwapChains++ == 0 || !last)
+        int index = g_gameSwapChains++;
+        if (index == 0 || !last)
             return;
         WaitForQueueIdle(last.get(), last == queue ? L"game (same queue)" : L"previous swapchain's");
-        Sleep(100);
+        WaitForEarlierSwapChains(index);
     }
 
     void AfterSwapChain(IUnknown* device)
@@ -602,7 +671,8 @@ namespace
             HOST_LOG(L"game swapchain failed: 0x%08x", static_cast<unsigned>(hr));
             return hr;
         }
-        HOST_LOG(L"game swapchain %ux%u created on CoreWindow", d.Width, d.Height);
+        HOST_LOG(L"game swapchain %d: %ux%u created on CoreWindow", g_gameSwapChains.load(), d.Width, d.Height);
+        TrackSwapChain(swapChain1, g_gameSwapChains.load() - 1);
         AfterSwapChain(device);
         if (before != S_FALSE) // a D3D12 queue: was the device alive before, and is it now?
         {
