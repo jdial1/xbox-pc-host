@@ -69,12 +69,50 @@ namespace
             std::thread(Reporter).detach();
     }
 
+    // Where the committed memory is, by address-space region: a line every 30 s with the committed private,
+    // mapped and image totals and the largest allocation bases (the game's image, its DLLs, pools, heaps).
+    void Census()
+    {
+        struct Base { const void* base; int64_t bytes; DWORD type; };
+        std::vector<Base> bases;
+        int64_t priv = 0, mapped = 0, image = 0;
+        MEMORY_BASIC_INFORMATION m{};
+        for (const uint8_t* p = nullptr; VirtualQuery(p, &m, sizeof(m)) == sizeof(m); p = static_cast<const uint8_t*>(m.BaseAddress) + m.RegionSize)
+        {
+            if (m.State != MEM_COMMIT) continue;
+            int64_t n = static_cast<int64_t>(m.RegionSize);
+            if (m.Type == MEM_PRIVATE) priv += n; else if (m.Type == MEM_MAPPED) mapped += n; else image += n;
+            if (!bases.empty() && bases.back().base == m.AllocationBase) bases.back().bytes += n;
+            else bases.push_back({ m.AllocationBase, n, m.Type });
+        }
+        std::sort(bases.begin(), bases.end(), [](Base const& a, Base const& b) { return a.bytes > b.bytes; });
+        std::wstring line = L"census: private " + std::to_wstring(priv >> 20) + L" MB, mapped " + std::to_wstring(mapped >> 20) +
+            L" MB, image " + std::to_wstring(image >> 20) + L" MB; largest:";
+        for (size_t i = 0; i < bases.size() && i < 8; ++i)
+        {
+            wchar_t owner[48] = {};
+            ModuleName(bases[i].base, owner, _countof(owner));
+            wchar_t buf[96];
+            swprintf_s(buf, L" %p %lld MB (%s%s)", bases[i].base, static_cast<long long>(bases[i].bytes >> 20),
+                bases[i].type == MEM_IMAGE ? L"image " : bases[i].type == MEM_MAPPED ? L"mapped " : L"",
+                bases[i].type == MEM_PRIVATE ? L"private" : owner);
+            line += buf;
+        }
+        HOST_LOG(L"%s", line.c_str());
+    }
+
     void Reporter()
     {
         int64_t last = 0;
+        ULONGLONG lastCensus = 0;
         for (;;)
         {
             Sleep(3000);
+            if (GetTickCount64() - lastCensus > 30000)
+            {
+                lastCensus = GetTickCount64();
+                Census();
+            }
             int64_t app = 0;
             try { app = static_cast<int64_t>(winrt::Windows::System::MemoryManager::AppMemoryUsage()); }
             catch (...) {} // not in a package (the PC harness)

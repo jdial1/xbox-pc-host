@@ -394,6 +394,45 @@ namespace
         g_d3dTap(pixels.data(), desc.Width, desc.Height, desc.Width * 4);
     }
 
+    // Which swapchain the game presents to, how often, and what DXGI answers: a game can have several
+    // (Mesa makes one per window) while the CoreWindow shows one, and Mesa ignores Present's result.
+    struct PresentStat { IDXGISwapChain* swapChain; unsigned count; HRESULT lastHr; };
+    std::mutex g_presentLock;
+    PresentStat g_presentStats[8]{};
+    ULONGLONG g_presentReport = 0;
+    void NotePresent(IDXGISwapChain* self, HRESULT hr, UINT flags)
+    {
+        if (flags & DXGI_PRESENT_TEST)
+            return;
+        std::lock_guard lock(g_presentLock);
+        for (auto& s : g_presentStats)
+        {
+            if (s.swapChain && s.swapChain != self) continue;
+            if (!s.swapChain) s.swapChain = self;
+            if (FAILED(hr) && s.lastHr != hr)
+                HOST_LOG(L"Present on swapchain %p failed: 0x%08x", self, static_cast<unsigned>(hr));
+            s.count++;
+            s.lastHr = hr;
+            break;
+        }
+        ULONGLONG now = GetTickCount64();
+        if (!g_presentReport) g_presentReport = now;
+        if (now - g_presentReport >= 10000)
+        {
+            std::wstring line = L"presents in " + std::to_wstring((now - g_presentReport) / 1000) + L" s:";
+            for (auto& s : g_presentStats)
+            {
+                if (!s.swapChain) break;
+                wchar_t buf[64];
+                swprintf_s(buf, L" %p x%u (0x%08x)", s.swapChain, s.count, static_cast<unsigned>(s.lastHr));
+                line += buf;
+                s.count = 0;
+            }
+            HOST_LOG(L"%s", line.c_str());
+            g_presentReport = now;
+        }
+    }
+
     HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain* self, UINT syncInterval, UINT flags)
     {
         if (!(flags & DXGI_PRESENT_TEST))
@@ -419,14 +458,18 @@ namespace
                 CaptureBackBuffer(self);
             }
         }
-        return g_originalPresent(self, syncInterval, flags);
+        HRESULT hr = g_originalPresent(self, syncInterval, flags);
+        NotePresent(self, hr, flags);
+        return hr;
     }
 
     HRESULT STDMETHODCALLTYPE Hook_Present1(IDXGISwapChain1* self, UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS* params)
     {
         if (!(flags & DXGI_PRESENT_TEST))
             DrawGameCursor(self);
-        return g_originalPresent1(self, syncInterval, flags, params);
+        HRESULT hr = g_originalPresent1(self, syncInterval, flags, params);
+        NotePresent(self, hr, flags);
+        return hr;
     }
 
     // Width or height 0 means "the window's size", which DXGI can't read from a CoreWindow off its
