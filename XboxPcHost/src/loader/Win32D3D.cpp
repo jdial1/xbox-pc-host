@@ -418,10 +418,41 @@ namespace
     // Every way a game makes a swapchain ends here: it is made on the CoreWindow, in the flip model
     // a CoreWindow needs, and its Present and ResizeBuffers are hooked. Returns the game's interface.
 
+    // Lets a D3D12 queue finish everything it has been given (a few ms at most while a game starts).
+    // Mesa's OpenGL makes a swapchain per window, and destroys the previous one just before, but DXGI
+    // tears a swapchain down only once the GPU is done with its buffers; creating the next one on the same
+    // CoreWindow in that window ended three console starts in a device reset (0x887a0007) or a wait inside
+    // the driver that never returned. With the queue idle, the old swapchain is gone before the new one.
+    void WaitForQueueIdle(IUnknown* device)
+    {
+        winrt::com_ptr<ID3D12CommandQueue> queue;
+        if (FAILED(device->QueryInterface(__uuidof(ID3D12CommandQueue), queue.put_void())))
+            return;
+        winrt::com_ptr<ID3D12Device> d3d12;
+        winrt::com_ptr<ID3D12Fence> fence;
+        if (FAILED(queue->GetDevice(__uuidof(ID3D12Device), d3d12.put_void())) ||
+            FAILED(d3d12->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), fence.put_void())))
+            return;
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!event)
+            return;
+        ULONGLONG t0 = GetTickCount64();
+        DWORD waited = WAIT_FAILED;
+        if (SUCCEEDED(queue->Signal(fence.get(), 1)) && SUCCEEDED(fence->SetEventOnCompletion(1, event)))
+            waited = WaitForSingleObject(event, 3000);
+        CloseHandle(event);
+        HOST_LOG(L"  game queue idle wait before the next swapchain: %s (%llu ms)",
+            waited == WAIT_OBJECT_0 ? L"done" : waited == WAIT_TIMEOUT ? L"timed out" : L"failed",
+            static_cast<unsigned long long>(GetTickCount64() - t0));
+    }
+    std::atomic<int> g_gameSwapChains{ 0 };
+
     HRESULT MakeGameSwapChain(IUnknown* device, DXGI_SWAP_CHAIN_DESC1 d, UINT sampleCount, REFIID iid, void** out)
     {
         if (!g_display || !device || !out)
             return DXGI_ERROR_INVALID_CALL;
+        if (g_gameSwapChains++ > 0)
+            WaitForQueueIdle(device);
         HRESULT before = QueueDeviceState(device);
         d.Width = d.Width ? d.Width : g_display->Width();
         d.Height = d.Height ? d.Height : g_display->Height();
