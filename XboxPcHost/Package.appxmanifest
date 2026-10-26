@@ -5,7 +5,7 @@
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   IgnorableNamespaces="uap mp">
 
-  <Identity Name="XboxPcHost" Publisher="CN=XboxPcHost" Version="0.1.39.0" />
+  <Identity Name="XboxPcHost" Publisher="CN=XboxPcHost" Version="0.1.40.0" />
   <mp:PhoneIdentity PhoneProductId="aaf748d1-8017-408d-91be-afd450d14a9b" PhonePublisherId="00000000-0000-0000-0000-000000000000" />
 
   <Properties>

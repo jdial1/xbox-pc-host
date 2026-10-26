@@ -99,6 +99,18 @@ namespace
         REFIID iid, void** out)
     {
         HRESULT hr = g_createCommitted.load()(self, heap, flags, desc, state, clear, iid, out);
+        if (hr == E_INVALIDARG && desc && desc->SampleDesc.Count > 1 && desc->Alignment != 0)
+        {
+            // Mesa asks 64 KB alignment for every texture; MSAA ones need 4 MB on devices without
+            // MSAA64KBAlignedTextureSupported (the console). Alignment 0 lets the runtime choose.
+            D3D12_RESOURCE_DESC fixed = *desc;
+            fixed.Alignment = 0;
+            hr = g_createCommitted.load()(self, heap, flags, &fixed, state, clear, iid, out);
+            static std::atomic<bool> s_logged{ false };
+            if (!s_logged.exchange(true))
+                HOST_LOG(L"D3D12: %u-sample texture refused at 64 KB alignment; with the runtime's alignment: 0x%08x",
+                    desc->SampleDesc.Count, static_cast<unsigned>(hr));
+        }
         if (FAILED(hr))
             LogResourceFailure(L"CreateCommittedResource", hr, desc, static_cast<UINT>(flags));
         return hr;
@@ -207,6 +219,10 @@ namespace
         }
         D3D12_FEATURE_DATA_D3D12_OPTIONS o{};
         device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &o, sizeof(o));
+        D3D12_FEATURE_DATA_D3D12_OPTIONS4 o4{};
+        HRESULT o4hr = device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &o4, sizeof(o4));
+        HOST_LOG(L"D3D12 OPTIONS4 (0x%08x): MSAA 64 KB aligned textures %d", static_cast<unsigned>(o4hr),
+            o4.MSAA64KBAlignedTextureSupported);
         HOST_LOG(L"D3D12 features: max level 0x%x, shader model 0x%x (0x%08x), binding tier %d, typed UAV loads %d, "
                  L"tiled tier %d, ROVs %d, conservative raster %d",
             static_cast<unsigned>(fl.MaxSupportedFeatureLevel), static_cast<unsigned>(sm.HighestShaderModel),
