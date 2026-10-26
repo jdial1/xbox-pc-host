@@ -73,6 +73,46 @@ namespace
         return hr;
     }
 
+    // Resources the runtime refuses to create: logged with their description (the first 40), since Mesa
+    // only reports the GL-level result (an incomplete framebuffer, a texture that stays empty).
+    constexpr size_t kCreateCommittedResource = 27, kCreatePlacedResource = 29;
+    using CreateCommittedFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
+        const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
+    using CreatePlacedFn = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Heap*, UINT64, const D3D12_RESOURCE_DESC*,
+        D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
+    std::atomic<CreateCommittedFn> g_createCommitted{ nullptr };
+    std::atomic<CreatePlacedFn> g_createPlaced{ nullptr };
+    std::atomic<int> g_resourceFailures{ 0 };
+
+    void LogResourceFailure(const wchar_t* how, HRESULT hr, const D3D12_RESOURCE_DESC* d, UINT heapFlags)
+    {
+        if (!d || g_resourceFailures++ >= 40)
+            return;
+        HOST_LOG(L"D3D12: %s failed 0x%08x: dim %d format %d %llux%u x%u mips %u samples %u/%u layout %d flags 0x%x heap flags 0x%x",
+            how, static_cast<unsigned>(hr), static_cast<int>(d->Dimension), static_cast<int>(d->Format),
+            static_cast<unsigned long long>(d->Width), d->Height, d->DepthOrArraySize, d->MipLevels, d->SampleDesc.Count,
+            d->SampleDesc.Quality, static_cast<int>(d->Layout), static_cast<unsigned>(d->Flags), heapFlags);
+    }
+
+    HRESULT STDMETHODCALLTYPE Hook_CreateCommittedResource(ID3D12Device* self, const D3D12_HEAP_PROPERTIES* heap,
+        D3D12_HEAP_FLAGS flags, const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE* clear,
+        REFIID iid, void** out)
+    {
+        HRESULT hr = g_createCommitted.load()(self, heap, flags, desc, state, clear, iid, out);
+        if (FAILED(hr))
+            LogResourceFailure(L"CreateCommittedResource", hr, desc, static_cast<UINT>(flags));
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE Hook_CreatePlacedResource(ID3D12Device* self, ID3D12Heap* heap, UINT64 offset,
+        const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES state, const D3D12_CLEAR_VALUE* clear, REFIID iid, void** out)
+    {
+        HRESULT hr = g_createPlaced.load()(self, heap, offset, desc, state, clear, iid, out);
+        if (FAILED(hr))
+            LogResourceFailure(L"CreatePlacedResource", hr, desc, 0);
+        return hr;
+    }
+
     // A pipeline the runtime refuses: logged, and its shaders (DXIL) saved next to host.log as
     // pso-fail-<n>-<stage>.dxil for `dxc -dumpbin`, to see which feature the console's D3D12 refused.
     // Mesa exits the process when one fails.
@@ -184,8 +224,8 @@ namespace
             D3D12_FEATURE_DATA_FORMAT_SUPPORT s{ f.format };
             HRESULT hr = device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &s, sizeof(s));
             std::wstring line = std::wstring(L"  format ") + f.name + L": support1 0x" ;
-            wchar_t hex[16];
-            swprintf_s(hex, L"%08x", static_cast<unsigned>(s.Support1));
+            wchar_t hex[40];
+            swprintf_s(hex, L"%08x support2 0x%08x", static_cast<unsigned>(s.Support1), static_cast<unsigned>(s.Support2));
             line += hex;
             line += FAILED(hr) ? L" (query failed)" : L"";
             line += L"; samples:";
@@ -343,10 +383,16 @@ namespace
                 ? PatchComTable(*out, 128, { { kCreateFence, reinterpret_cast<void*>(&Hook_CreateFence) },
                       { kCheckFeatureSupport, reinterpret_cast<void*>(&Hook_CheckFeatureSupport) },
                       { kCreateGraphicsPipelineState, reinterpret_cast<void*>(&Hook_CreateGraphicsPipelineState) },
+                      { kCreateCommittedResource, reinterpret_cast<void*>(&Hook_CreateCommittedResource) },
+                      { kCreatePlacedResource, reinterpret_cast<void*>(&Hook_CreatePlacedResource) },
                       { kCreatePipelineState, reinterpret_cast<void*>(&Hook_CreatePipelineState) } })
                 : PatchComTable(*out, 128, { { kCreateFence, reinterpret_cast<void*>(&Hook_CreateFence) },
                       { kCheckFeatureSupport, reinterpret_cast<void*>(&Hook_CheckFeatureSupport) },
+                      { kCreateCommittedResource, reinterpret_cast<void*>(&Hook_CreateCommittedResource) },
+                      { kCreatePlacedResource, reinterpret_cast<void*>(&Hook_CreatePlacedResource) },
                       { kCreateGraphicsPipelineState, reinterpret_cast<void*>(&Hook_CreateGraphicsPipelineState) } });
+            g_createCommitted = reinterpret_cast<CreateCommittedFn>(original[kCreateCommittedResource]);
+            g_createPlaced = reinterpret_cast<CreatePlacedFn>(original[kCreatePlacedResource]);
             g_createFence = reinterpret_cast<CreateFenceFn>(original[kCreateFence]);
             g_checkFeatureSupport = reinterpret_cast<CheckFeatureSupportFn>(original[kCheckFeatureSupport]);
             g_createGraphicsPso = reinterpret_cast<CreateGraphicsPsoFn>(original[kCreateGraphicsPipelineState]);
