@@ -26,9 +26,22 @@ namespace
     std::atomic<CheckFeatureSupportFn> g_checkFeatureSupport{ nullptr };
     std::atomic<int> g_typedLoadsAdded{ 0 };
 
+    // The console's D3D12 reports barycentrics (D3D12_OPTIONS3) and then refuses every pipeline whose pixel
+    // shader uses them: Mesa reads flat (nointerpolation) inputs with attributeAtVertex when the device
+    // says it can, and BAR's loading screen got through only because none of its shaders had a flat input.
+    // Told "no", Mesa handles flat inputs another way (Mesa's own Xbox UWP build hardcodes the same answer).
+    std::atomic<bool> g_barycentricsLogged{ false };
+
     HRESULT STDMETHODCALLTYPE Hook_CheckFeatureSupport(ID3D12Device* self, D3D12_FEATURE feature, void* data, UINT size)
     {
         HRESULT hr = g_checkFeatureSupport.load()(self, feature, data, size);
+        if (SUCCEEDED(hr) && feature == D3D12_FEATURE_D3D12_OPTIONS3 && size >= sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS3))
+        {
+            auto* o = static_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS3*>(data);
+            if (o->BarycentricsSupported && !g_barycentricsLogged.exchange(true))
+                HOST_LOG(L"D3D12: barycentrics reported supported; telling the game no (pipelines using them are refused)");
+            o->BarycentricsSupported = FALSE;
+        }
         if (SUCCEEDED(hr) && feature == D3D12_FEATURE_FORMAT_SUPPORT && size >= sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT))
         {
             auto* s = static_cast<D3D12_FEATURE_DATA_FORMAT_SUPPORT*>(data);

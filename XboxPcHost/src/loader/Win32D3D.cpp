@@ -210,6 +210,49 @@ namespace
         return hr;
     }
 
+    // The console's adapter carries Microsoft's vendor id (0x1414), which to Mesa means WARP: a software
+    // device that supports everything, so Mesa reads flat inputs with attributeAtVertex without asking,
+    // and the console refuses those pipelines. The game is told the GPU's real maker (AMD) instead.
+    // VendorId sits at the same offset in every DXGI_ADAPTER_DESC version (after the description).
+    constexpr size_t kGetDesc = 8, kGetDesc1 = 10, kGetDesc2 = 11, kGetDesc3 = 18;
+    constexpr UINT kVendorMicrosoft = 0x1414, kVendorAmd = 0x1002;
+    std::atomic<bool> g_vendorLogged{ false };
+    void FixVendor(DXGI_ADAPTER_DESC* desc, void* returnAddress)
+    {
+        if (!desc || !CalledByGame(returnAddress))
+            return;
+        if (!g_vendorLogged.exchange(true))
+            HOST_LOG(L"game adapter vendor 0x%04x device 0x%04x%s", desc->VendorId, desc->DeviceId,
+                desc->VendorId == kVendorMicrosoft ? L": reported as AMD (Mesa treats Microsoft as WARP)" : L"");
+        if (desc->VendorId == kVendorMicrosoft)
+            desc->VendorId = kVendorAmd;
+    }
+    using GetDescFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIAdapter*, void*);
+    HRESULT STDMETHODCALLTYPE Hook_GetDesc(IDXGIAdapter* self, void* desc)
+    {
+        HRESULT hr = Original<GetDescFn>(self, kGetDesc)(self, desc);
+        if (SUCCEEDED(hr)) FixVendor(static_cast<DXGI_ADAPTER_DESC*>(desc), _ReturnAddress());
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE Hook_GetDesc1(IDXGIAdapter* self, void* desc)
+    {
+        HRESULT hr = Original<GetDescFn>(self, kGetDesc1)(self, desc);
+        if (SUCCEEDED(hr)) FixVendor(static_cast<DXGI_ADAPTER_DESC*>(desc), _ReturnAddress());
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE Hook_GetDesc2(IDXGIAdapter* self, void* desc)
+    {
+        HRESULT hr = Original<GetDescFn>(self, kGetDesc2)(self, desc);
+        if (SUCCEEDED(hr)) FixVendor(static_cast<DXGI_ADAPTER_DESC*>(desc), _ReturnAddress());
+        return hr;
+    }
+    HRESULT STDMETHODCALLTYPE Hook_GetDesc3(IDXGIAdapter* self, void* desc)
+    {
+        HRESULT hr = Original<GetDescFn>(self, kGetDesc3)(self, desc);
+        if (SUCCEEDED(hr)) FixVendor(static_cast<DXGI_ADAPTER_DESC*>(desc), _ReturnAddress());
+        return hr;
+    }
+
     winrt::com_ptr<IDXGIAdapter> g_lastAdapter; // for the output a swapchain reports
     std::set<std::wstring> g_adaptersLogged;
     void PatchAdapter(IUnknown* object)
@@ -218,7 +261,9 @@ namespace
         if (!object || FAILED(object->QueryInterface(__uuidof(IDXGIAdapter), adapter.put_void())))
             return;
         Patch(adapter.get(), kAdapterSlots, { { kEnumOutputs, reinterpret_cast<void*>(&Hook_EnumOutputs) },
-            { kQueryVideoMemoryInfo, reinterpret_cast<void*>(&Hook_QueryVideoMemoryInfo) } });
+            { kQueryVideoMemoryInfo, reinterpret_cast<void*>(&Hook_QueryVideoMemoryInfo) },
+            { kGetDesc, reinterpret_cast<void*>(&Hook_GetDesc) }, { kGetDesc1, reinterpret_cast<void*>(&Hook_GetDesc1) },
+            { kGetDesc2, reinterpret_cast<void*>(&Hook_GetDesc2) }, { kGetDesc3, reinterpret_cast<void*>(&Hook_GetDesc3) } });
         DXGI_ADAPTER_DESC desc{};
         adapter->GetDesc(&desc);
         std::lock_guard lock(g_lock);
