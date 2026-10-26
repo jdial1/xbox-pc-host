@@ -29,6 +29,7 @@ namespace
     // The factory's ways to an adapter, and the adapter's to its outputs.
     constexpr size_t kEnumAdapters = 7, kEnumAdapters1 = 12, kEnumAdapterByLuid = 26, kEnumAdapterByGpuPreference = 29;
     constexpr size_t kEnumOutputs = 7, kAdapterSlots = 24;
+    constexpr size_t kQueryVideoMemoryInfo = 14; // IDXGIAdapter3: after GetDesc1, GetDesc2 and the two teardown-status calls
 
     // Big enough for IDXGIFactory7 and IDXGISwapChain4. Older, shorter tables just copy a few
     // harmless extra pointers from the read-only data that follows.
@@ -174,6 +175,41 @@ namespace
         return *out ? S_OK : DXGI_ERROR_NOT_FOUND;
     }
 
+    // The video memory budget the game sees. Mesa's d3d12 driver evicts resources to stay inside the
+    // adapter's budget; on the console that budget is far above what the app may commit (5 GB for
+    // everything, GPU included), so a game can run into the app limit before Mesa evicts anything.
+    // HOST_GPU_BUDGET_MB (host-env.txt) caps the local budget the game is told; the host's own queries
+    // (memory stats) still see the real one.
+    uint64_t GameBudgetCapBytes()
+    {
+        static uint64_t cap = [] {
+            wchar_t buf[32]{};
+            DWORD n = GetEnvironmentVariableW(L"HOST_GPU_BUDGET_MB", buf, _countof(buf));
+            uint64_t mb = (n && n < _countof(buf)) ? _wtoi64(buf) : 0;
+            if (mb)
+                HOST_LOG(L"game video memory budget capped at %llu MB", static_cast<unsigned long long>(mb));
+            return mb << 20;
+        }();
+        return cap;
+    }
+
+    using QueryVideoMemoryInfoFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIAdapter3*, UINT, DXGI_MEMORY_SEGMENT_GROUP,
+        DXGI_QUERY_VIDEO_MEMORY_INFO*);
+    HRESULT STDMETHODCALLTYPE Hook_QueryVideoMemoryInfo(IDXGIAdapter3* self, UINT node, DXGI_MEMORY_SEGMENT_GROUP group,
+        DXGI_QUERY_VIDEO_MEMORY_INFO* info)
+    {
+        HRESULT hr = Original<QueryVideoMemoryInfoFn>(self, kQueryVideoMemoryInfo)(self, node, group, info);
+        uint64_t cap = GameBudgetCapBytes();
+        if (SUCCEEDED(hr) && info && cap && CalledByGame(_ReturnAddress()))
+        {
+            if (group == DXGI_MEMORY_SEGMENT_GROUP_LOCAL)
+                info->Budget = std::min<UINT64>(info->Budget, cap);
+            else
+                info->Budget = 0; // Mesa adds both groups' budgets
+        }
+        return hr;
+    }
+
     winrt::com_ptr<IDXGIAdapter> g_lastAdapter; // for the output a swapchain reports
     std::set<std::wstring> g_adaptersLogged;
     void PatchAdapter(IUnknown* object)
@@ -181,7 +217,8 @@ namespace
         winrt::com_ptr<IDXGIAdapter> adapter;
         if (!object || FAILED(object->QueryInterface(__uuidof(IDXGIAdapter), adapter.put_void())))
             return;
-        Patch(adapter.get(), kAdapterSlots, { { kEnumOutputs, reinterpret_cast<void*>(&Hook_EnumOutputs) } });
+        Patch(adapter.get(), kAdapterSlots, { { kEnumOutputs, reinterpret_cast<void*>(&Hook_EnumOutputs) },
+            { kQueryVideoMemoryInfo, reinterpret_cast<void*>(&Hook_QueryVideoMemoryInfo) } });
         DXGI_ADAPTER_DESC desc{};
         adapter->GetDesc(&desc);
         std::lock_guard lock(g_lock);
@@ -659,7 +696,7 @@ void RegisterD3D(Win32Layer& layer)
     }
 }
 
-uint64_t GameGpuMemoryUsage()
+static bool GameGpuMemoryInfo(DXGI_QUERY_VIDEO_MEMORY_INFO& info)
 {
     winrt::com_ptr<IDXGIAdapter> adapter;
     {
@@ -667,9 +704,18 @@ uint64_t GameGpuMemoryUsage()
         adapter = g_lastAdapter;
     }
     winrt::com_ptr<IDXGIAdapter3> adapter3;
+    return adapter && SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), adapter3.put_void())) &&
+        SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info));
+}
+
+uint64_t GameGpuMemoryUsage()
+{
     DXGI_QUERY_VIDEO_MEMORY_INFO info{};
-    if (!adapter || FAILED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), adapter3.put_void())) ||
-        FAILED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
-        return 0;
-    return info.CurrentUsage;
+    return GameGpuMemoryInfo(info) ? info.CurrentUsage : 0;
+}
+
+uint64_t GameGpuMemoryBudget()
+{
+    DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+    return GameGpuMemoryInfo(info) ? info.Budget : 0;
 }

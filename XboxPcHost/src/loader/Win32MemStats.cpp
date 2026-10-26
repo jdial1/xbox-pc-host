@@ -85,7 +85,8 @@ namespace
                 continue;
             last = app;
             std::wstring line = L"mem: app " + std::to_wstring(app >> 20) + L" MB, gpu " +
-                std::to_wstring(GameGpuMemoryUsage() >> 20) + L" MB, big VirtualAlloc " +
+                std::to_wstring(GameGpuMemoryUsage() >> 20) + L" of " + std::to_wstring(GameGpuMemoryBudget() >> 20) +
+                L" MB, big VirtualAlloc " +
                 std::to_wstring(g_bigVirtual.load() >> 20) + L" MB; heaps:";
             for (auto& s : g_heaps)
             {

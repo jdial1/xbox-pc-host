@@ -89,6 +89,7 @@ void RegisterD3D12(Win32Layer& layer);
 void RegisterMemStats(Win32Layer& layer);
 void NoteGameVirtualAlloc(const void* caller, void* p, SIZE_T size, DWORD type); // Win32MemStats.cpp
 uint64_t GameGpuMemoryUsage(); // the game's adapter's local video memory in use, 0 if unknown
+uint64_t GameGpuMemoryBudget(); // and the budget the system gives it (the real one, not the game's capped view)
 // Points a COM object at a copy of its vtable with slots replaced; returns the original table.
 void** PatchComTable(void* object, size_t slots, std::initializer_list<std::pair<size_t, void*>> replacements);
 void RegisterLegacy(Win32Layer& layer);
@@ -162,7 +163,7 @@ void EnterGameThread(DWORD reason);
 void LeaveGameThread();
 
 // Logs the calling thread's stack: "game+0x..." for frames in the game's image (resolve them with
-// toolsesolve_game_offsets.py and the game's pdb), module+offset for everything else.
+// tools/resolve_game_offsets.py and the game's pdb), module+offset for everything else.
 void LogGameStack(const wchar_t* why, const CONTEXT* from = nullptr); // from: a fault's context, else the caller's
 
 // Logs where every game thread is right now (each suspended briefly): for stalls.

@@ -1,3 +1,6 @@
 # Mesa: the console's D3D12 (feature level 11_0) keeps Mesa below GL 4.3; BAR's GL4 path needs it.
 MESA_GL_VERSION_OVERRIDE=4.6COMPAT
 MESA_GLSL_VERSION_OVERRIDE=460
+# Host: the video memory budget the game sees (Mesa evicts to stay inside it). The console's real budget is
+# far above the 5 GB app limit, which counts GPU memory too; with 1024 Mesa trims textures before the app dies.
+HOST_GPU_BUDGET_MB=1024
