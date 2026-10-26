@@ -9,6 +9,8 @@ local PERIOD = 6
 local shots = { [30 * 20] = true }
 local frames, last = 0, nil
 local bisect = Spring.GetConfigInt("HostProbeBisect", 0) == 1
+local nowidgets = Spring.GetConfigInt("HostProbeNoWidgets", 0) == 1 -- screenshot with every other widget off
+local allNames = nil
 local baseline, suspects, testing, phase = nil, nil, nil, 0
 
 local function Names()
@@ -86,6 +88,11 @@ function widget:DrawScreen()
 		frames, last = 0, now
 		if bisect then Step(fps) end
 		phase = bisect and phase or phase + 1
+		if not bisect and nowidgets then
+			if phase == 3 then allNames = Names(); SetEnabled(allNames, false); Spring.Echo("[host-probe] all " .. #allNames .. " widgets disabled") end
+			if phase == 4 then Spring.SendCommands("screenshot png"); Spring.Echo("[host-probe] screenshot with widgets disabled") end
+			if phase == 5 then SetEnabled(allNames, true); Spring.Echo("[host-probe] widgets re-enabled") end
+		end
 		if not bisect and Spring.GetConfigInt("HostProbeDebug", 0) == 1 then
 			if phase == 3 then Spring.SendCommands("debug") end
 			if phase == 6 then Spring.SendCommands("screenshot png"); Spring.Echo("[host-probe] debug screenshot") end

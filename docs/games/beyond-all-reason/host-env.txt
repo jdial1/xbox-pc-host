@@ -4,3 +4,6 @@ MESA_GLSL_VERSION_OVERRIDE=460
 # Host: the video memory budget the game sees (Mesa evicts to stay inside it). The console's real budget is
 # far above the 5 GB app limit, which counts GPU memory too; with 1024 Mesa trims textures before the app dies.
 HOST_GPU_BUDGET_MB=1024
+# Mesa: no glthread (Mesa's drirc turns it on for spring.exe). On the console it draws every in-game frame black;
+# the loading screen and a debug context (which disables glthread) render, and so does this.
+mesa_glthread=false

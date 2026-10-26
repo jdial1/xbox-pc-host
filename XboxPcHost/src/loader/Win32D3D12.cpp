@@ -32,6 +32,21 @@ namespace
     // Told "no", Mesa handles flat inputs another way (Mesa's own Xbox UWP build hardcodes the same answer).
     std::atomic<bool> g_barycentricsLogged{ false };
 
+    // HOST_TYPED_UAV_LOADS=0 (host-env.txt) leaves the console's format answers alone: Mesa then stops at
+    // GL 4.1 (no shader images), for telling whether a game's rendering trouble comes from that report.
+    bool TypedUavLoadsReported()
+    {
+        static bool on = [] {
+            wchar_t buf[8]{};
+            DWORD n = GetEnvironmentVariableW(L"HOST_TYPED_UAV_LOADS", buf, _countof(buf));
+            bool v = !(n && n < _countof(buf) && buf[0] == L'0');
+            if (!v)
+                HOST_LOG(L"D3D12: typed UAV loads reported as the console says (HOST_TYPED_UAV_LOADS=0)");
+            return v;
+        }();
+        return on;
+    }
+
     HRESULT STDMETHODCALLTYPE Hook_CheckFeatureSupport(ID3D12Device* self, D3D12_FEATURE feature, void* data, UINT size)
     {
         HRESULT hr = g_checkFeatureSupport.load()(self, feature, data, size);
@@ -42,7 +57,8 @@ namespace
                 HOST_LOG(L"D3D12: barycentrics reported supported; telling the game no (pipelines using them are refused)");
             o->BarycentricsSupported = FALSE;
         }
-        if (SUCCEEDED(hr) && feature == D3D12_FEATURE_FORMAT_SUPPORT && size >= sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT))
+        if (SUCCEEDED(hr) && feature == D3D12_FEATURE_FORMAT_SUPPORT && size >= sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT) &&
+            TypedUavLoadsReported())
         {
             auto* s = static_cast<D3D12_FEATURE_DATA_FORMAT_SUPPORT*>(data);
             if ((s->Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) &&
