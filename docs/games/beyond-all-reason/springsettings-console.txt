@@ -25,9 +25,10 @@ YResolution = 1080
 # ForceDisableGL4: the console's D3D12 (feature level 11_0) refuses pipelines whose vertex shader reads a storage
 # buffer, which Recoil's GL4 drawers and BAR's CUS GL4 need; this is Recoil's safe-mode switch to the GLSL drawers.
 ForceDisableGL4 = 1
-# Less GPU memory: no deferred G-buffers, compressed and streamed textures.
+# Less GPU memory: no deferred G-buffers, streamed map textures. CompressTextures must stay 0: it gives
+# render-to-texture atlases (unit icons, projectile noise) compressed formats, which cannot be render targets.
 AllowDeferredMapRendering = 0
 AllowDeferredModelRendering = 0
 AllowDrawMapDeferredEvents = 0
-CompressTextures = 1
+CompressTextures = 0
 SMFTextureStreaming = 1
