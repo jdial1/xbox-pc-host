@@ -163,9 +163,24 @@ namespace
         }
     }
 
+    // The console's D3D12 answers feature level 11_0 at most, and the runtime refuses pipelines whose vertex
+    // shader reads a UAV (Mesa's GL storage buffers, which BAR's GL4 renderer uses) below 11_1. Asking for
+    // 11_1 outright shows whether 11_0 is the device's limit or only what the sandbox reports; a refusal
+    // falls back to what the game asked for.
+    std::atomic<bool> g_level111Logged{ false };
+
     HRESULT WINAPI Shim_D3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level, REFIID iid, void** out)
     {
-        HRESULT hr = D3D12CreateDevice(adapter, level, iid, out);
+        HRESULT hr = E_FAIL;
+        if (level < D3D_FEATURE_LEVEL_11_1)
+        {
+            hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_1, iid, out);
+            if (!g_level111Logged.exchange(true))
+                HOST_LOG(L"D3D12CreateDevice(feature level 0xb100, game asked for 0x%x) -> 0x%08x", static_cast<unsigned>(level),
+                    static_cast<unsigned>(hr));
+        }
+        if (FAILED(hr))
+            hr = D3D12CreateDevice(adapter, level, iid, out);
         if (SUCCEEDED(hr) && out && *out)
         {
             // Slot 47 exists only on an ID3D12Device2 (and later).
