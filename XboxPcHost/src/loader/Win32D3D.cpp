@@ -396,6 +396,7 @@ namespace
 
     // Which swapchain the game presents to, how often, and what DXGI answers: a game can have several
     // (Mesa makes one per window) while the CoreWindow shows one, and Mesa ignores Present's result.
+    void LogRemovedFor(IUnknown* queueOrDevice); // below, with the swapchain code
     struct PresentStat { IDXGISwapChain* swapChain; unsigned count; HRESULT lastHr; };
     std::mutex g_presentLock;
     PresentStat g_presentStats[8]{};
@@ -410,7 +411,12 @@ namespace
             if (s.swapChain && s.swapChain != self) continue;
             if (!s.swapChain) s.swapChain = self;
             if (FAILED(hr) && s.lastHr != hr)
+            {
                 HOST_LOG(L"Present on swapchain %p failed: 0x%08x", self, static_cast<unsigned>(hr));
+                winrt::com_ptr<IUnknown> queue;
+                if (SUCCEEDED(self->GetDevice(__uuidof(IUnknown), queue.put_void())))
+                    LogRemovedFor(queue.get());
+            }
             s.count++;
             s.lastHr = hr;
             break;
@@ -506,16 +512,9 @@ namespace
     // Every way a game makes a swapchain ends here: it is made on the CoreWindow, in the flip model
     // a CoreWindow needs, and its Present and ResizeBuffers are hooked. Returns the game's interface.
 
-    // Lets a D3D12 queue finish everything it has been given (a few ms at most while a game starts).
-    // Mesa's OpenGL makes a swapchain per window, and destroys the previous one just before, but DXGI
-    // tears a swapchain down only once the GPU is done with its buffers; creating the next one on the same
-    // CoreWindow in that window ended three console starts in a device reset (0x887a0007) or a wait inside
-    // the driver that never returned. With the queue idle, the old swapchain is gone before the new one.
-    void WaitForQueueIdle(IUnknown* device)
+    // Lets a D3D12 queue finish everything it has been given.
+    void WaitForQueueIdle(ID3D12CommandQueue* queue, const wchar_t* which)
     {
-        winrt::com_ptr<ID3D12CommandQueue> queue;
-        if (FAILED(device->QueryInterface(__uuidof(ID3D12CommandQueue), queue.put_void())))
-            return;
         winrt::com_ptr<ID3D12Device> d3d12;
         winrt::com_ptr<ID3D12Fence> fence;
         if (FAILED(queue->GetDevice(__uuidof(ID3D12Device), d3d12.put_void())) ||
@@ -529,18 +528,58 @@ namespace
         if (SUCCEEDED(queue->Signal(fence.get(), 1)) && SUCCEEDED(fence->SetEventOnCompletion(1, event)))
             waited = WaitForSingleObject(event, 3000);
         CloseHandle(event);
-        HOST_LOG(L"  game queue idle wait before the next swapchain: %s (%llu ms)",
+        HOST_LOG(L"  %s queue idle wait: %s (%llu ms)", which,
             waited == WAIT_OBJECT_0 ? L"done" : waited == WAIT_TIMEOUT ? L"timed out" : L"failed",
             static_cast<unsigned long long>(GetTickCount64() - t0));
     }
+
+    // Mesa's OpenGL makes a swapchain per window (SDL makes two probe windows before the real one) and
+    // destroys its screen, queue included, between them. DXGI tears a flip swapchain down only once its
+    // queue is done with it; creating the next one on the same CoreWindow too soon ended about half of the
+    // console's BAR starts in a device reset (0x887a0007) at the third swapchain. The host keeps the last
+    // swapchain's queue alive, lets it drain and gives the compositor a moment before the next one.
+    winrt::com_ptr<ID3D12CommandQueue> g_lastGameQueue;
     std::atomic<int> g_gameSwapChains{ 0 };
+
+    void BeforeNextSwapChain(IUnknown* device)
+    {
+        winrt::com_ptr<ID3D12CommandQueue> queue, last;
+        device->QueryInterface(__uuidof(ID3D12CommandQueue), queue.put_void());
+        {
+            std::lock_guard lock(g_lock);
+            last = g_lastGameQueue;
+        }
+        if (g_gameSwapChains++ == 0 || !last)
+            return;
+        WaitForQueueIdle(last.get(), last == queue ? L"game (same queue)" : L"previous swapchain's");
+        Sleep(100);
+    }
+
+    void AfterSwapChain(IUnknown* device)
+    {
+        winrt::com_ptr<ID3D12CommandQueue> queue;
+        if (FAILED(device->QueryInterface(__uuidof(ID3D12CommandQueue), queue.put_void())))
+            return;
+        std::lock_guard lock(g_lock);
+        g_lastGameQueue = queue;
+    }
+
+    // The device behind a D3D12 swapchain's queue, for removal details.
+    void LogRemovedFor(IUnknown* queueOrDevice)
+    {
+        winrt::com_ptr<ID3D12CommandQueue> queue;
+        winrt::com_ptr<ID3D12Device> d3d12;
+        if (SUCCEEDED(queueOrDevice->QueryInterface(__uuidof(ID3D12CommandQueue), queue.put_void())))
+            queue->GetDevice(__uuidof(ID3D12Device), d3d12.put_void());
+        if (d3d12)
+            LogD3D12RemovedDetails(d3d12.get());
+    }
 
     HRESULT MakeGameSwapChain(IUnknown* device, DXGI_SWAP_CHAIN_DESC1 d, UINT sampleCount, REFIID iid, void** out)
     {
         if (!g_display || !device || !out)
             return DXGI_ERROR_INVALID_CALL;
-        if (g_gameSwapChains++ > 0)
-            WaitForQueueIdle(device);
+        BeforeNextSwapChain(device);
         HRESULT before = QueueDeviceState(device);
         d.Width = d.Width ? d.Width : g_display->Width();
         d.Height = d.Height ? d.Height : g_display->Height();
@@ -564,9 +603,15 @@ namespace
             return hr;
         }
         HOST_LOG(L"game swapchain %ux%u created on CoreWindow", d.Width, d.Height);
+        AfterSwapChain(device);
         if (before != S_FALSE) // a D3D12 queue: was the device alive before, and is it now?
+        {
+            HRESULT after = QueueDeviceState(device);
             HOST_LOG(L"  D3D12 device removed reason before 0x%08x, after 0x%08x", static_cast<unsigned>(before),
-                static_cast<unsigned>(QueueDeviceState(device)));
+                static_cast<unsigned>(after));
+            if (after != S_OK)
+                LogRemovedFor(device);
+        }
 
         // One vtable serves IDXGISwapChain and its later versions, so patching it covers all of them.
         void** original = Patch(swapChain1, kSwapChainSlots, {

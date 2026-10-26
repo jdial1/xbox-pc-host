@@ -198,8 +198,107 @@ namespace
     // falls back to what the game asked for.
     std::atomic<bool> g_level111Logged{ false };
 
+    // HOST_D3D12_DRED=1 (host-env.txt): Device Removed Extended Data on, before the game's first device, so a
+    // removal can be traced to the command list and operation the GPU was on and to a faulting address.
+    std::atomic<bool> g_dredTried{ false }, g_dredOn{ false };
+    void EnableDred()
+    {
+        if (g_dredTried.exchange(true))
+            return;
+        wchar_t buf[8]{};
+        DWORD n = GetEnvironmentVariableW(L"HOST_D3D12_DRED", buf, _countof(buf));
+        if (!(n && n < _countof(buf) && buf[0] == L'1'))
+            return;
+        winrt::com_ptr<ID3D12DeviceRemovedExtendedDataSettings> dred;
+        HRESULT hr = D3D12GetDebugInterface(__uuidof(ID3D12DeviceRemovedExtendedDataSettings), dred.put_void());
+        if (SUCCEEDED(hr))
+        {
+            dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            g_dredOn = true;
+        }
+        HOST_LOG(L"D3D12: DRED (breadcrumbs, page faults) %s (0x%08x)", SUCCEEDED(hr) ? L"on" : L"unavailable",
+            static_cast<unsigned>(hr));
+    }
+
+    const wchar_t* OpName(D3D12_AUTO_BREADCRUMB_OP op)
+    {
+        switch (op)
+        {
+        case D3D12_AUTO_BREADCRUMB_OP_SETMARKER: return L"SetMarker";
+        case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT: return L"BeginEvent";
+        case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT: return L"EndEvent";
+        case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED: return L"DrawInstanced";
+        case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED: return L"DrawIndexedInstanced";
+        case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT: return L"ExecuteIndirect";
+        case D3D12_AUTO_BREADCRUMB_OP_DISPATCH: return L"Dispatch";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION: return L"CopyBufferRegion";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION: return L"CopyTextureRegion";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE: return L"CopyResource";
+        case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE: return L"ResolveSubresource";
+        case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW: return L"ClearRenderTargetView";
+        case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW: return L"ClearUnorderedAccessView";
+        case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW: return L"ClearDepthStencilView";
+        case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER: return L"ResourceBarrier";
+        case D3D12_AUTO_BREADCRUMB_OP_PRESENT: return L"Present";
+        case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA: return L"ResolveQueryData";
+        case D3D12_AUTO_BREADCRUMB_OP_WRITEBUFFERIMMEDIATE: return L"WriteBufferImmediate";
+        default: return L"(other)";
+        }
+    }
+}
+
+void LogD3D12RemovedDetails(ID3D12Device* device)
+{
+    static std::atomic<bool> logged{ false };
+    if (!device || logged.exchange(true))
+        return;
+    HOST_LOG(L"D3D12 device removed: reason 0x%08x", static_cast<unsigned>(device->GetDeviceRemovedReason()));
+    if (!g_dredOn)
+        return;
+    winrt::com_ptr<ID3D12DeviceRemovedExtendedData> dred;
+    if (FAILED(device->QueryInterface(__uuidof(ID3D12DeviceRemovedExtendedData), dred.put_void())))
+    {
+        HOST_LOG(L"  DRED: no data interface");
+        return;
+    }
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT crumbs{};
+    HRESULT hr = dred->GetAutoBreadcrumbsOutput(&crumbs);
+    HOST_LOG(L"  DRED breadcrumbs: 0x%08x", static_cast<unsigned>(hr));
+    int nodes = 0;
+    for (const D3D12_AUTO_BREADCRUMB_NODE* n = SUCCEEDED(hr) ? crumbs.pHeadAutoBreadcrumbNode : nullptr; n && nodes < 32;
+         n = n->pNext, ++nodes)
+    {
+        UINT done = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
+        if (done >= n->BreadcrumbCount)
+            continue; // this list finished
+        wchar_t head[96];
+        swprintf_s(head, L"    queue %p list %p: %u of %u ops done;", n->pCommandQueue, n->pCommandList, done, n->BreadcrumbCount);
+        std::wstring line = head;
+        UINT from = done > 3 ? done - 3 : 0;
+        for (UINT i = from; i < n->BreadcrumbCount && i < done + 4; ++i)
+            line += std::wstring(i == done ? L" >>" : L" ") + OpName(n->pCommandHistory[i]);
+        HOST_LOG(L"%s", line.c_str());
+    }
+    HOST_LOG(L"  DRED: %d breadcrumb nodes", nodes);
+    D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
+    hr = dred->GetPageFaultAllocationOutput(&fault);
+    HOST_LOG(L"  DRED page fault: 0x%08x, VA 0x%llx", static_cast<unsigned>(hr), static_cast<unsigned long long>(fault.PageFaultVA));
+    int shown = 0;
+    for (const D3D12_DRED_ALLOCATION_NODE* a = SUCCEEDED(hr) ? fault.pHeadExistingAllocationNode : nullptr; a && shown < 8;
+         a = a->pNext, ++shown)
+        HOST_LOG(L"    existing allocation: type %d %s", static_cast<int>(a->AllocationType), a->ObjectNameW ? a->ObjectNameW : L"");
+    shown = 0;
+    for (const D3D12_DRED_ALLOCATION_NODE* a = SUCCEEDED(hr) ? fault.pHeadRecentFreedAllocationNode : nullptr; a && shown < 8;
+         a = a->pNext, ++shown)
+        HOST_LOG(L"    recently freed allocation: type %d %s", static_cast<int>(a->AllocationType), a->ObjectNameW ? a->ObjectNameW : L"");
+}
+
+namespace
+{
     HRESULT WINAPI Shim_D3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level, REFIID iid, void** out)
     {
+        EnableDred();
         HRESULT hr = E_FAIL;
         if (level < D3D_FEATURE_LEVEL_11_1)
         {
@@ -241,8 +340,11 @@ namespace
         {
             std::lock_guard lock(g_deviceLock);
             if (g_device)
+            {
                 HOST_LOG(L"  the game's first D3D12 device: removed reason 0x%08x",
                     static_cast<unsigned>(g_device->GetDeviceRemovedReason()));
+                LogD3D12RemovedDetails(g_device.get());
+            }
         }
         return hr;
     }

@@ -90,6 +90,8 @@ void RegisterMemStats(Win32Layer& layer);
 void NoteGameVirtualAlloc(const void* caller, void* p, SIZE_T size, DWORD type); // Win32MemStats.cpp
 uint64_t GameGpuMemoryUsage(); // the game's adapter's local video memory in use, 0 if unknown
 uint64_t GameGpuMemoryBudget(); // and the budget the system gives it (the real one, not the game's capped view)
+struct ID3D12Device;
+void LogD3D12RemovedDetails(ID3D12Device* device); // the reason and, with HOST_D3D12_DRED=1, DRED data (once)
 // Points a COM object at a copy of its vtable with slots replaced; returns the original table.
 void** PatchComTable(void* object, size_t slots, std::initializer_list<std::pair<size_t, void*>> replacements);
 void RegisterLegacy(Win32Layer& layer);
