@@ -1,0 +1,7 @@
+# Recoil 2026.07.04 spring.exe (BAR): StaticMemPools sized for the engine's maximum, committed only as used.
+# From the debug symbols (nm -S spring.dbg): "<rva> <size>" with image base 0x140000000. Build-specific.
+timestamp 6a7244d5
+185b6e40 2f5d0020 weaponMemPool
+6a2f0c0 8d9a020 projMemPool
+f83c540 8973820 unitMemPool
+24da480 2d2a840 featureMemPool

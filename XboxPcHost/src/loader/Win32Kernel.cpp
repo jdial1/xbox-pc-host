@@ -1,5 +1,6 @@
 #include "pch.h"
 #include <fstream>
+#include <sstream>
 #include "loader/Win32Layer.h"
 #include "loader/Win32Text.h"
 #include "Log.h"
@@ -142,12 +143,48 @@ namespace
         return it != g_rwx.begin() && a < std::prev(it)->second;
     }
 
+    // ---- Ranges of the game's image committed on first touch (host-lazy.txt; see ApplyLazyRanges).
+    std::mutex g_lazyLock;
+    std::map<uintptr_t, uintptr_t> g_lazy; // begin -> end, whole pages
+    std::atomic<int64_t> g_lazyCommitted{ 0 };
+    constexpr uintptr_t kLazyChunk = 64u << 10;
+
+    bool InLazy(uintptr_t a, uintptr_t* begin = nullptr, uintptr_t* end = nullptr)
+    {
+        std::lock_guard lock(g_lazyLock);
+        auto it = g_lazy.upper_bound(a);
+        if (it == g_lazy.begin() || a >= std::prev(it)->second)
+            return false;
+        --it;
+        if (begin) *begin = it->first;
+        if (end) *end = it->second;
+        return true;
+    }
+
+    // A fault on a page of a lazy range that is only reserved: commit its 64 KB chunk (within the range).
+    bool CommitLazyAt(uintptr_t a)
+    {
+        uintptr_t rb, re;
+        if (!InLazy(a, &rb, &re))
+            return false;
+        MEMORY_BASIC_INFORMATION m{};
+        if (!VirtualQuery(reinterpret_cast<void*>(a), &m, sizeof(m)) || m.State != MEM_RESERVE)
+            return false; // committed already: a real fault
+        uintptr_t b = std::max(a & ~(kLazyChunk - 1), rb), e = std::min((a & ~(kLazyChunk - 1)) + kLazyChunk, re);
+        if (!VirtualAllocFromApp(reinterpret_cast<void*>(b), e - b, MEM_COMMIT, PAGE_READWRITE))
+            return false;
+        g_lazyCommitted += static_cast<int64_t>(e - b);
+        return true;
+    }
+
     LONG CALLBACK RwxFault(EXCEPTION_POINTERS* info)
     {
         auto const* r = info->ExceptionRecord;
         if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2)
             return EXCEPTION_CONTINUE_SEARCH;
         ULONG_PTR kind = r->ExceptionInformation[0], at = r->ExceptionInformation[1];
+        if ((kind == 0 || kind == 1) && CommitLazyAt(at))
+            return EXCEPTION_CONTINUE_EXECUTION; // first touch of a lazily committed range
         if ((kind != 8 && kind != 1) || !InRwx(at))
             return EXCEPTION_CONTINUE_SEARCH;
         ULONG old = 0;
@@ -405,6 +442,121 @@ void KeepHostFaultHandlerFirst()
     RemoveVectoredExceptionHandler(g_rwxHandle);
     g_rwxHandle = AddVectoredExceptionHandler(1, RwxFault);
 }
+
+namespace
+{
+    using MemsetFn = void*(__cdecl*)(void*, int, size_t);
+    MemsetFn g_memset = nullptr;
+
+    // The game image's memset: zero-filling whole pages of a lazy range decommits them (they read as zero
+    // when touched again), everything else is the game's own memset.
+    void* __cdecl LazyMemset(void* dst, int c, size_t n)
+    {
+        uintptr_t a = reinterpret_cast<uintptr_t>(dst), end = a + n;
+        if (c != 0 || n < (1u << 20))
+            return g_memset(dst, c, n);
+        while (a < end)
+        {
+            uintptr_t rb, re;
+            if (!InLazy(a, &rb, &re))
+            {
+                // up to the next lazy range, or the end
+                uintptr_t next = end;
+                {
+                    std::lock_guard lock(g_lazyLock);
+                    auto it = g_lazy.upper_bound(a);
+                    if (it != g_lazy.end() && it->first < end) next = it->first;
+                }
+                g_memset(reinterpret_cast<void*>(a), 0, next - a);
+                a = next;
+                continue;
+            }
+            uintptr_t stop = std::min(end, re);
+            uintptr_t pb = (a + 0xFFF) & ~uintptr_t(0xFFF), pe = stop & ~uintptr_t(0xFFF);
+            if (pe > pb)
+            {
+                if (pb > a) g_memset(reinterpret_cast<void*>(a), 0, pb - a);
+                VirtualFree(reinterpret_cast<void*>(pb), pe - pb, MEM_DECOMMIT);
+                if (stop > pe) g_memset(reinterpret_cast<void*>(pe), 0, stop - pe);
+            }
+            else
+                g_memset(reinterpret_cast<void*>(a), 0, stop - a);
+            a = stop;
+        }
+        return dst;
+    }
+}
+
+void ApplyLazyRanges(uint8_t* base, std::filesystem::path const& dir)
+{
+    std::ifstream in(dir / L"host-lazy.txt");
+    if (!in)
+        return;
+    auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    std::string line;
+    std::vector<std::tuple<uint64_t, uint64_t, std::string>> ranges;
+    uint64_t stamp = ~0ull;
+    while (std::getline(in, line))
+    {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream ss(line);
+        std::string a, b, name;
+        ss >> a >> b >> name;
+        if (a == "timestamp") { stamp = std::stoull(b, nullptr, 16); continue; }
+        if (!b.empty()) ranges.emplace_back(std::stoull(a, nullptr, 16), std::stoull(b, nullptr, 16), name);
+    }
+    if (stamp != nt->FileHeader.TimeDateStamp)
+    {
+        HOST_LOG(L"host-lazy.txt is for build %llx, the exe is %x: not applied", static_cast<unsigned long long>(stamp),
+            static_cast<unsigned>(nt->FileHeader.TimeDateStamp));
+        return;
+    }
+    size_t total = 0;
+    for (auto const& [rva, size, name] : ranges)
+    {
+        if (rva + size > nt->OptionalHeader.SizeOfImage) continue;
+        uintptr_t b = (reinterpret_cast<uintptr_t>(base) + rva + 0xFFF) & ~uintptr_t(0xFFF);
+        uintptr_t e = (reinterpret_cast<uintptr_t>(base) + rva + size) & ~uintptr_t(0xFFF);
+        if (e <= b) continue;
+        BOOL ok = VirtualFree(reinterpret_cast<void*>(b), e - b, MEM_DECOMMIT);
+        if (ok)
+        {
+            std::lock_guard lock(g_lazyLock);
+            g_lazy[b] = e;
+            total += e - b;
+        }
+        HOST_LOG(L"lazy range %S: %llu MB %s", name.c_str(), static_cast<unsigned long long>((e - b) >> 20),
+            ok ? L"decommitted, committed on use" : L"could not be decommitted");
+    }
+    if (!total)
+        return;
+    if (!g_rwxHandler.exchange(true))
+        g_rwxHandle = AddVectoredExceptionHandler(1, RwxFault);
+
+    // The image's memset import, through LazyMemset.
+    auto const& dirImp = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    for (auto desc = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + dirImp.VirtualAddress); dirImp.VirtualAddress && desc->Name; ++desc)
+    {
+        auto lookup = reinterpret_cast<uint64_t*>(base + (desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk));
+        auto iat = reinterpret_cast<uint64_t*>(base + desc->FirstThunk);
+        for (; *lookup; ++lookup, ++iat)
+        {
+            if (IMAGE_SNAP_BY_ORDINAL64(*lookup)) continue;
+            auto byName = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base + static_cast<uint32_t>(*lookup));
+            if (strcmp(byName->Name, "memset") != 0) continue;
+            ULONG old = 0;
+            if (!VirtualProtectFromApp(iat, sizeof(*iat), PAGE_READWRITE, &old)) continue;
+            g_memset = reinterpret_cast<MemsetFn>(*iat);
+            *iat = reinterpret_cast<uint64_t>(&LazyMemset);
+            VirtualProtectFromApp(iat, sizeof(*iat), old, &old);
+            HOST_LOG(L"lazy ranges: %zu MB in all; the exe's memset (%S) zero-fills them by decommitting",
+                total >> 20, reinterpret_cast<const char*>(base + desc->Name));
+        }
+    }
+}
+
+int64_t LazyCommittedBytes() { return g_lazyCommitted.load(); }
 
 void SetGameProcess(void* imageBase, std::filesystem::path const& exe, std::filesystem::path const& root)
 {

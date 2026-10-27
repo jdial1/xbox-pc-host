@@ -258,6 +258,7 @@ namespace
             BeginGameDllLoading(exe.parent_path());
             if (!image->Load(exe, *m_win32, error))
                 return Fail(error);
+            ApplyLazyRanges(image->Base(), exe.parent_path());
             m_win32->LogUnresolved();
             if (!image->EntryPoint() || image->IsDll())
                 return Fail(L"not an exe with an entry point");

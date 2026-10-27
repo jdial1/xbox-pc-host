@@ -85,6 +85,8 @@ void SetGameDisplayForGdi(GameDisplay* display);
 void SetGameProcess(void* imageBase, std::filesystem::path const& exe, std::filesystem::path const& root);
 std::filesystem::path GameExePath(); // the running game's exe
 void KeepHostFaultHandlerFirst();    // after a game adds a vectored handler
+void ApplyLazyRanges(uint8_t* base, std::filesystem::path const& dir); // host-lazy.txt: ranges committed on use
+int64_t LazyCommittedBytes();        // how much of them is committed so far
 void RegisterD3D12(Win32Layer& layer);
 void RegisterMemStats(Win32Layer& layer);
 void NoteGameVirtualAlloc(const void* caller, void* p, SIZE_T size, DWORD type); // Win32MemStats.cpp
