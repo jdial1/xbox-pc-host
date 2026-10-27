@@ -439,8 +439,191 @@ namespace
         }
     }
 
+    ID3D12CommandQueue* LastGameQueueRaw(); // the queue the game's last swapchain was made with (below)
+
+    // ---- capture-frames.txt: the next frames a D3D12 swapchain presents, saved at half size.
+    struct FrameGrabber
+    {
+        winrt::com_ptr<ID3D12Device> device;
+        winrt::com_ptr<ID3D12CommandAllocator> allocator;
+        winrt::com_ptr<ID3D12GraphicsCommandList> list;
+        winrt::com_ptr<ID3D12Fence> fence;
+        winrt::com_ptr<ID3D12Resource> readback;
+        UINT64 fenceValue = 0, readbackSize = 0;
+    };
+    FrameGrabber g_grab;
+    std::atomic<int> g_grabLeft{ 0 }, g_grabIndex{ 0 };
+    std::atomic<unsigned> g_grabCheck{ 0 };
+
+    void WriteHalfBmp(std::filesystem::path const& file, const uint8_t* src, UINT pitch, UINT w, UINT h, bool bgra,
+        double& mean, double& black)
+    {
+        UINT ow = w / 2, oh = h / 2;
+        std::vector<uint8_t> out(static_cast<size_t>(ow) * oh * 4);
+        uint64_t sum = 0, dark = 0;
+        for (UINT y = 0; y < oh; ++y)
+            for (UINT x = 0; x < ow; ++x)
+            {
+                const uint8_t* px = src + static_cast<size_t>(y * 2) * pitch + static_cast<size_t>(x * 2) * 4;
+                uint8_t r = bgra ? px[2] : px[0], g = px[1], b = bgra ? px[0] : px[2];
+                uint8_t* o = &out[(static_cast<size_t>(y) * ow + x) * 4];
+                o[0] = b; o[1] = g; o[2] = r; o[3] = 255;
+                unsigned l = (r * 3 + g * 6 + b) / 10;
+                sum += l;
+                if (l < 8) ++dark;
+            }
+        mean = static_cast<double>(sum) / (static_cast<double>(ow) * oh);
+        black = 100.0 * static_cast<double>(dark) / (static_cast<double>(ow) * oh);
+#pragma pack(push, 2)
+        struct FileHeader { uint16_t type; uint32_t size; uint16_t r1, r2; uint32_t offset; };
+#pragma pack(pop)
+        struct InfoHeader { uint32_t size; int32_t width, height; uint16_t planes, bits; uint32_t compression, imageSize;
+            int32_t xppm, yppm; uint32_t used, important; };
+        FileHeader fh{};
+        InfoHeader ih{};
+        ih.size = sizeof(ih); ih.width = static_cast<int32_t>(ow); ih.height = -static_cast<int32_t>(oh);
+        ih.planes = 1; ih.bits = 32;
+        fh.type = 0x4D42; fh.offset = sizeof(fh) + sizeof(ih);
+        fh.size = fh.offset + static_cast<uint32_t>(out.size());
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, file.c_str(), L"wb") == 0 && f)
+        {
+            fwrite(&fh, sizeof(fh), 1, f); fwrite(&ih, sizeof(ih), 1, f); fwrite(out.data(), 1, out.size(), f);
+            fclose(f);
+        }
+    }
+
+    void GrabFrame(IDXGISwapChain* self)
+    {
+        winrt::com_ptr<IDXGISwapChain3> sc3;
+        winrt::com_ptr<ID3D12CommandQueue> queue;
+        HRESULT qi = self->QueryInterface(__uuidof(IDXGISwapChain3), sc3.put_void());
+        HRESULT gd = self->GetDevice(__uuidof(ID3D12CommandQueue), queue.put_void());
+        if (FAILED(gd))
+            if (ID3D12CommandQueue* last = LastGameQueueRaw()) { queue.copy_from(last); gd = S_OK; }
+        if (FAILED(qi) || FAILED(gd))
+        {
+            HOST_LOG(L"frame capture: not a D3D12 swapchain (0x%08x, 0x%08x)", static_cast<unsigned>(qi), static_cast<unsigned>(gd));
+            g_grabLeft = 0;
+            return;
+        }
+        winrt::com_ptr<ID3D12Resource> back;
+        UINT index = sc3->GetCurrentBackBufferIndex();
+        HRESULT gb = sc3->GetBuffer(index, __uuidof(ID3D12Resource), back.put_void());
+        if (FAILED(gb))
+        {
+            HOST_LOG(L"frame capture: back buffer %u not available (0x%08x)", index, static_cast<unsigned>(gb));
+            g_grabLeft = 0;
+            return;
+        }
+        D3D12_RESOURCE_DESC desc = back->GetDesc();
+        bool bgra = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        bool rgba = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        if (!bgra && !rgba)
+        {
+            HOST_LOG(L"frame capture: back buffer format %d not handled", static_cast<int>(desc.Format));
+            g_grabLeft = 0;
+            return;
+        }
+        FrameGrabber& g = g_grab;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT foot{};
+        UINT64 total = 0;
+        if (!g.device)
+        {
+            queue->GetDevice(__uuidof(ID3D12Device), g.device.put_void());
+            if (!g.device ||
+                FAILED(g.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), g.allocator.put_void())) ||
+                FAILED(g.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g.allocator.get(), nullptr,
+                    __uuidof(ID3D12GraphicsCommandList), g.list.put_void())) ||
+                FAILED(g.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), g.fence.put_void())))
+            {
+                HOST_LOG(L"frame capture: setup failed");
+                g = {};
+                g_grabLeft = 0;
+                return;
+            }
+            g.list->Close();
+        }
+        g.device->GetCopyableFootprints(&desc, 0, 1, 0, &foot, nullptr, nullptr, &total);
+        if (!g.readback || g.readbackSize < total)
+        {
+            D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_READBACK };
+            D3D12_RESOURCE_DESC buf{ D3D12_RESOURCE_DIMENSION_BUFFER, 0, total, 1, 1, 1, DXGI_FORMAT_UNKNOWN, { 1, 0 },
+                D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_RESOURCE_FLAG_NONE };
+            g.readback = nullptr;
+            if (FAILED(g.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                    __uuidof(ID3D12Resource), g.readback.put_void())))
+            {
+                HOST_LOG(L"frame capture: no readback buffer");
+                g_grabLeft = 0;
+                return;
+            }
+            g.readbackSize = total;
+        }
+        g.allocator->Reset();
+        g.list->Reset(g.allocator.get(), nullptr);
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = back.get();
+        barrier.Transition.Subresource = 0;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        g.list->ResourceBarrier(1, &barrier);
+        D3D12_TEXTURE_COPY_LOCATION dst{ g.readback.get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
+        dst.PlacedFootprint = foot;
+        D3D12_TEXTURE_COPY_LOCATION src{ back.get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+        src.SubresourceIndex = 0;
+        g.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+        g.list->ResourceBarrier(1, &barrier);
+        g.list->Close();
+        ID3D12CommandList* lists[] = { g.list.get() };
+        queue->ExecuteCommandLists(1, lists);
+        queue->Signal(g.fence.get(), ++g.fenceValue);
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (event)
+        {
+            g.fence->SetEventOnCompletion(g.fenceValue, event);
+            WaitForSingleObject(event, 2000);
+            CloseHandle(event);
+        }
+        void* mapped = nullptr;
+        D3D12_RANGE range{ 0, static_cast<SIZE_T>(total) };
+        if (FAILED(g.readback->Map(0, &range, &mapped)) || !mapped)
+            return;
+        int n = g_grabIndex++;
+        double mean = 0, black = 0;
+        WriteHalfBmp(host::log::Folder() / (L"frame-" + std::to_wstring(n) + L".bmp"), static_cast<const uint8_t*>(mapped) + foot.Offset,
+            foot.Footprint.RowPitch, foot.Footprint.Width, foot.Footprint.Height, bgra, mean, black);
+        D3D12_RANGE none{ 0, 0 };
+        g.readback->Unmap(0, &none);
+        HOST_LOG(L"frame capture %d: buffer %u, mean brightness %.1f, black pixels %.1f%%, at %llu ms", n, index, mean, black,
+            static_cast<unsigned long long>(GetTickCount64()));
+    }
+
+    void MaybeGrabFrame(IDXGISwapChain* self)
+    {
+        if (g_grabLeft.load() == 0)
+        {
+            if (g_grabCheck++ % 60 != 0)
+                return;
+            std::filesystem::path request = host::log::Folder() / L"capture-frames.txt";
+            std::error_code ec;
+            if (!std::filesystem::exists(request, ec))
+                return;
+            std::filesystem::remove(request, ec);
+            HOST_LOG(L"frame capture: requested (capture-frames.txt), the next 12 frames");
+            g_grabLeft = 12;
+        }
+        GrabFrame(self);
+        if (g_grabLeft > 0)
+            --g_grabLeft;
+    }
+
     HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain* self, UINT syncInterval, UINT flags)
     {
+        if (!(flags & DXGI_PRESENT_TEST))
+            MaybeGrabFrame(self);
         if (!(flags & DXGI_PRESENT_TEST))
             DrawGameCursor(self);
         if (!g_presented.exchange(true))
@@ -622,6 +805,12 @@ namespace
             return;
         WaitForQueueIdle(last.get(), last == queue ? L"game (same queue)" : L"previous swapchain's");
         WaitForEarlierSwapChains(index);
+    }
+
+    ID3D12CommandQueue* LastGameQueueRaw()
+    {
+        std::lock_guard lock(g_lock);
+        return g_lastGameQueue.get();
     }
 
     void AfterSwapChain(IUnknown* device)
