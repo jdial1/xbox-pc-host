@@ -26,6 +26,12 @@ The console gives the app 5 GB. Headless BAR commits 6.2 GB on a large map with 
 `springsettings-console.txt` and a small map it is 3.5 GB. Use `--isolation` without `--write-dir`: a
 relative write dir gets its "." glued onto file names.
 
+Graphical BAR on the console also needs `host-lazy.txt` (next to spring.exe): Recoil's four static object
+pools (weapons 758 MB, projectiles 142, units 138, features 45) are sized for the engine's maximum and
+zero-filled at startup; the host commits them only as they are used, and a match touches about 1 MB. The
+file is tied to the exe build by its PE timestamp; regenerate the ranges with `nm -S spring.dbg` for a new
+engine. With it, BAR with its full UI peaks at 4.2 GB on the console (it ran out at 5.1 GB without).
+
 ## OpenGL through Mesa
 Mesa (mesa-dist-win, `GALLIUM_DRIVER=d3d12`) gives Recoil OpenGL 4.6 Compatibility and renders it
 correctly. Recoil's Lua VAO draws use primitive-restart index 0xFFFFFF for 32-bit indices, which D3D12
