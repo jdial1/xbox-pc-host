@@ -181,17 +181,22 @@ namespace
     // everything, GPU included), so a game can run into the app limit before Mesa evicts anything.
     // HOST_GPU_BUDGET_MB (host-env.txt) caps the local budget the game is told; the host's own queries
     // (memory stats) still see the real one.
+    // Not a function-local static: its initialization guard would add a thread_local to the host's TLS block,
+    // which must hold only the game's static-TLS buffer (Factorio crashed in its static initializers).
+    std::atomic<int64_t> g_budgetCap{ -1 };
     uint64_t GameBudgetCapBytes()
     {
-        static uint64_t cap = [] {
+        int64_t cap = g_budgetCap.load();
+        if (cap < 0)
+        {
             wchar_t buf[32]{};
             DWORD n = GetEnvironmentVariableW(L"HOST_GPU_BUDGET_MB", buf, _countof(buf));
-            uint64_t mb = (n && n < _countof(buf)) ? _wtoi64(buf) : 0;
-            if (mb)
-                HOST_LOG(L"game video memory budget capped at %llu MB", static_cast<unsigned long long>(mb));
-            return mb << 20;
-        }();
-        return cap;
+            int64_t mb = (n && n < _countof(buf)) ? _wtoi64(buf) : 0;
+            cap = mb > 0 ? (mb << 20) : 0;
+            if (g_budgetCap.exchange(cap) < 0 && mb > 0)
+                HOST_LOG(L"game video memory budget capped at %lld MB", static_cast<long long>(mb));
+        }
+        return static_cast<uint64_t>(cap);
     }
 
     using QueryVideoMemoryInfoFn = HRESULT(STDMETHODCALLTYPE*)(IDXGIAdapter3*, UINT, DXGI_MEMORY_SEGMENT_GROUP,

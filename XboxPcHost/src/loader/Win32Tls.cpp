@@ -185,6 +185,12 @@ namespace
         std::wstring name = image.Path().filename().wstring();
         bool marker = MarkerOnly(tls);
         int pick = PickSlot(tls, marker);
+        // A game exe with real TLS data goes in the host's own block when it fits, as before 0.1.18.0. In a
+        // slot DLL's block Factorio's static initializers crashed (null read in TypeToIDLoaderMapping::set,
+        // a function-local static seen as built): why that block differs for it is still open.
+        if (exe && !marker && !g_slots.empty() && g_slots[0].index == _tls_index && g_slots[0].owner.empty() &&
+            g_slots[0].capacity >= tls.totalSize)
+            pick = 0;
         if (pick < 0)
         {
             size_t largest = 0;

@@ -34,17 +34,20 @@ namespace
 
     // HOST_TYPED_UAV_LOADS=0 (host-env.txt) leaves the console's format answers alone: Mesa then stops at
     // GL 4.1 (no shader images), for telling whether a game's rendering trouble comes from that report.
+    // Not a function-local static (its init guard is a thread_local; see GameBudgetCapBytes in Win32D3D.cpp).
+    std::atomic<int> g_typedUavLoads{ -1 };
     bool TypedUavLoadsReported()
     {
-        static bool on = [] {
+        int on = g_typedUavLoads.load();
+        if (on < 0)
+        {
             wchar_t buf[8]{};
             DWORD n = GetEnvironmentVariableW(L"HOST_TYPED_UAV_LOADS", buf, _countof(buf));
-            bool v = !(n && n < _countof(buf) && buf[0] == L'0');
-            if (!v)
+            on = (n && n < _countof(buf) && buf[0] == L'0') ? 0 : 1;
+            if (g_typedUavLoads.exchange(on) < 0 && !on)
                 HOST_LOG(L"D3D12: typed UAV loads reported as the console says (HOST_TYPED_UAV_LOADS=0)");
-            return v;
-        }();
-        return on;
+        }
+        return on != 0;
     }
 
     HRESULT STDMETHODCALLTYPE Hook_CheckFeatureSupport(ID3D12Device* self, D3D12_FEATURE feature, void* data, UINT size)
