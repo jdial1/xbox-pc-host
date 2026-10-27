@@ -32,3 +32,7 @@ AllowDeferredModelRendering = 0
 AllowDrawMapDeferredEvents = 0
 CompressTextures = 0
 SMFTextureStreaming = 1
+# Vsync on: with BAR's default -1 Mesa presents with ALLOW_TEARING and BAR ran ~75 fps on the 60 Hz screen,
+# tearing every frame. VSyncGame is BAR's in-game copy of the setting and overrides VSync once a match starts.
+VSync = 1
+VSyncGame = 1
