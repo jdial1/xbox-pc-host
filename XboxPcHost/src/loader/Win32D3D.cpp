@@ -4,6 +4,7 @@
 #include "Log.h"
 
 #include <map>
+#include <fstream>
 #include <d3dcompiler.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -452,19 +453,20 @@ namespace
         UINT64 fenceValue = 0, readbackSize = 0;
     };
     FrameGrabber g_grab;
-    std::atomic<int> g_grabLeft{ 0 }, g_grabIndex{ 0 };
+    std::atomic<int> g_grabLeft{ 0 }, g_grabIndex{ 0 }, g_grabDivisor{ 2 };
     std::atomic<unsigned> g_grabCheck{ 0 };
 
     void WriteHalfBmp(std::filesystem::path const& file, const uint8_t* src, UINT pitch, UINT w, UINT h, bool bgra,
         double& mean, double& black)
     {
-        UINT ow = w / 2, oh = h / 2;
+        UINT d = static_cast<UINT>(std::max(1, g_grabDivisor.load()));
+        UINT ow = w / d, oh = h / d;
         std::vector<uint8_t> out(static_cast<size_t>(ow) * oh * 4);
         uint64_t sum = 0, dark = 0;
         for (UINT y = 0; y < oh; ++y)
             for (UINT x = 0; x < ow; ++x)
             {
-                const uint8_t* px = src + static_cast<size_t>(y * 2) * pitch + static_cast<size_t>(x * 2) * 4;
+                const uint8_t* px = src + static_cast<size_t>(y * d) * pitch + static_cast<size_t>(x * d) * 4;
                 uint8_t r = bgra ? px[2] : px[0], g = px[1], b = bgra ? px[0] : px[2];
                 uint8_t* o = &out[(static_cast<size_t>(y) * ow + x) * 4];
                 o[0] = b; o[1] = g; o[2] = r; o[3] = 255;
@@ -611,9 +613,17 @@ namespace
             std::error_code ec;
             if (!std::filesystem::exists(request, ec))
                 return;
+            int frames = 12, divisor = 2;
+            {
+                std::ifstream in(request);
+                in >> frames >> divisor;
+            }
             std::filesystem::remove(request, ec);
-            HOST_LOG(L"frame capture: requested (capture-frames.txt), the next 12 frames");
-            g_grabLeft = 12;
+            frames = std::clamp(frames, 1, 600);
+            g_grabDivisor = std::clamp(divisor, 1, 8);
+            g_grabIndex = 0;
+            HOST_LOG(L"frame capture: requested (capture-frames.txt), the next %d frames at 1/%d size", frames, g_grabDivisor.load());
+            g_grabLeft = frames;
         }
         GrabFrame(self);
         if (g_grabLeft > 0)
