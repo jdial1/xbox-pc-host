@@ -131,10 +131,21 @@ private:
         std::ifstream in(file);
         std::string name;
         if (!in || !std::getline(in, name))
+        {
+#ifdef HOST_AUTOSTART_GAME
+            // A dedicated build (one game, its own package): start that game every time.
+            for (wchar_t c : std::wstring(HOST_AUTOSTART_GAME))
+                name.push_back(static_cast<char>(c)); // game folder names are ASCII
+#else
             return;
-        in.close();
-        std::error_code ec;
-        std::filesystem::rename(file, file.parent_path() / L"autorun.used", ec);
+#endif
+        }
+        else
+        {
+            in.close();
+            std::error_code ec;
+            std::filesystem::rename(file, file.parent_path() / L"autorun.used", ec);
+        }
         while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
 
         auto const& games = m_library.Games();
@@ -149,7 +160,8 @@ private:
             m_launched = true;
             return;
         }
-        HOST_LOG(L"autorun: no game named %S", name.c_str());
+        HOST_LOG(L"autorun: no game named %S (its files go in %s)", name.c_str(),
+            (m_library.UserGamesRoot() / std::wstring(name.begin(), name.end())).c_str());
     }
 
     void UpdateShell()
